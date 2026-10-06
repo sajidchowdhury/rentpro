@@ -2,7 +2,7 @@
 
 > Modern Rent & Property Management System — a clean, fast replacement for the legacy `osudlagb_home_rent` PHP/MySQL app.
 
-**Status:** Phase 1 prototype — Dashboard + "Generate this month's rent" running on real data.
+**Status:** Phase 1 prototype — Dashboard + Generate Rent + **Unified Rent Collection (F2)** running on real data.
 
 ## What is this?
 
@@ -44,11 +44,15 @@ rentpro/
     │   └── api/
     │       ├── months/route.ts      # available months (from real collection data)
     │       ├── dashboard/route.ts   # dashboard KPIs for a month
-    │       └── generate-rent/route.ts # rent-generation preview + POST action
+    │       ├── generate-rent/route.ts # rent-generation preview + POST action
+    │       ├── tenants/route.ts    # tenant list with outstanding summary (F2)
+    │       ├── tenant-ledger/route.ts # one tenant's due months + advance (F2)
+    │       └── collect/route.ts     # record a collection + return receipt (F2)
     ├── components/
     │   ├── rentpro/
     │   │   ├── dashboard.tsx        # KPIs, trend chart, due/vacant/recent lists
-    │   │   └── generate-rent.tsx    # monthly rent auto-generation screen
+    │   │   ├── generate-rent.tsx    # monthly rent auto-generation screen
+    │   │   └── collect-rent.tsx     # unified collection: picker, due list, collect dialog, receipt+QR (F2)
     │   └── ui/                      # full shadcn/ui component set
     └── lib/
         ├── legacyParser.ts          # SQL dump parser (mirrors scripts/lib)

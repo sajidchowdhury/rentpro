@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp } from "lucide-react";
+import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -9,9 +9,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { DashboardView } from "@/components/rentpro/dashboard";
 import { GenerateRentView } from "@/components/rentpro/generate-rent";
+import { CollectRentView } from "@/components/rentpro/collect-rent";
 import { toast } from "sonner";
 
-type View = "dashboard" | "generate";
+type View = "dashboard" | "generate" | "collect";
 
 interface MonthOpt { year: string; month: string }
 
@@ -37,6 +38,7 @@ interface GenerateData {
 const NAV: { id: View; label: string; labelBn: string; icon: any; active: boolean }[] = [
   { id: "dashboard", label: "Dashboard", labelBn: "ড্যাশবোর্ড", icon: LayoutDashboard, active: true },
   { id: "generate", label: "Generate Rent", labelBn: "ভাড়া জেনারেট", icon: Zap, active: true },
+  { id: "collect", label: "Collect Rent", labelBn: "কালেকশন", icon: Wallet, active: true },
 ];
 const NAV_DISABLED = [
   { label: "Tenants", labelBn: "ভাড়াটিয়া", icon: Users },
@@ -73,6 +75,11 @@ export default function RentProPage() {
   // fetch view data when month/year/view change
   const refresh = useCallback(async () => {
     if (!month || !year) return;
+    // Collect view manages its own data fetching (tenant picker + ledger).
+    if (view === "collect") {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       if (view === "dashboard") {
@@ -220,6 +227,8 @@ export default function RentProPage() {
               <DashboardView data={dash} />
             ) : view === "generate" && gen ? (
               <GenerateRentView data={gen} onGenerate={onGenerate} generating={generating} />
+            ) : view === "collect" ? (
+              <CollectRentView month={month} year={year} />
             ) : (
               <div className="text-muted-foreground">No data.</div>
             )}

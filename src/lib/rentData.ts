@@ -585,3 +585,368 @@ export function getGeneratePreview(
 export function markMonthGenerated(month: string, year: string): void {
   generatedMonths.add(`${year}|${month}`);
 }
+
+// ============================================================================
+// F2 — UNIFIED RENT COLLECTION
+// ----------------------------------------------------------------------------
+// getTenantList:  all tenants with leases + their outstanding summary.
+// getTenantLedger: one tenant's due months (oldest first), advance, recent.
+// collectRent:    record a collection (full/partial/advance-adjust/pay-later)
+//                  + create ledger transaction + return a printable receipt.
+// ============================================================================
+
+// In-memory prototype state for new collections/transactions. IDs start at
+// 1,000,000 so they never collide with legacy ids (max ~1,560 / ~1,880).
+let nextCollectionId = 1_000_000;
+let nextTxnId = 1_000_000;
+// tenantId -> total advance adjusted so far (prototype tracking)
+const tenantAdjustments = new Map<number, number>();
+
+function tenantAdvanceBalance(tenantId: number, ds: Dataset): number {
+  const initial = ds.leases
+    .filter((l) => l.tenantId === tenantId)
+    .reduce((s, l) => s + l.advance, 0);
+  const adjusted = tenantAdjustments.get(tenantId) ?? 0;
+  return Math.max(0, initial - adjusted);
+}
+
+export interface TenantSummary {
+  id: number;
+  code: string;
+  name: string;
+  mobile: string | null;
+  status: "ACTIVE" | "GONE";
+  leaseCount: number;
+  outstandingCount: number;
+  outstandingTotal: number;
+  advanceBalance: number;
+}
+
+export function getTenantList(
+  asOfMonth: string,
+  asOfYear: string
+): TenantSummary[] {
+  const ds = loadDataset();
+  const asOfKey = keyFromYM(asOfYear, asOfMonth);
+  const out: TenantSummary[] = [];
+
+  for (const t of ds.tenants) {
+    const leases = ds.leases.filter((l) => l.tenantId === t.id);
+    if (leases.length === 0) continue;
+    let outstandingCount = 0;
+    let outstandingTotal = 0;
+    for (const l of leases) {
+      const startK = dateKey(l.agreementStart);
+      if (startK === null) continue;
+      const fromK = Math.max(startK, asOfKey - 23); // last 24 months
+      for (let k = fromK; k <= asOfKey; k++) {
+        const y = Math.floor(k / 12);
+        const m = MONTHS[k % 12];
+        const collected = ds.collections
+          .filter(
+            (c) =>
+              c.leaseId === l.id &&
+              c.rentMonth === m &&
+              c.rentYear === String(y) &&
+              c.status === "DONE"
+          )
+          .reduce((s, c) => s + c.rent, 0);
+        const total = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+        if (collected < total) {
+          outstandingCount++;
+          outstandingTotal += total - collected;
+        }
+      }
+    }
+    out.push({
+      id: t.id,
+      code: t.code,
+      name: t.name,
+      mobile: t.mobile,
+      status: t.status,
+      leaseCount: leases.length,
+      outstandingCount,
+      outstandingTotal,
+      advanceBalance: tenantAdvanceBalance(t.id, ds),
+    });
+  }
+
+  // biggest dues first; always-paid tenants still appear (useful to collect)
+  return out.sort((a, b) => b.outstandingTotal - a.outstandingTotal);
+}
+
+export interface DueRow {
+  leaseId: number;
+  month: string;
+  year: string;
+  propertyName: string;
+  unitName: string;
+  rent: number;
+  gasBill: number;
+  serviceCharge: number;
+  otherBill: number;
+  total: number;
+  collected: number;
+  remaining: number;
+  status: "DUE" | "PARTIAL" | "OVERDUE" | "PAID";
+}
+export interface TenantLedger {
+  tenant: {
+    id: number;
+    name: string;
+    mobile: string | null;
+    code: string;
+    status: "ACTIVE" | "GONE";
+    advanceBalance: number;
+  };
+  leases: Array<{
+    id: number;
+    propertyName: string;
+    unitName: string;
+    rent: number;
+    status: "ACTIVE" | "CLOSED";
+  }>;
+  dueRows: DueRow[];
+  outstandingTotal: number;
+  outstandingCount: number;
+  recentCollections: Array<{
+    id: number;
+    month: string;
+    year: string;
+    rent: number;
+    receiveDate: string | null;
+    status: string;
+  }>;
+}
+
+export function getTenantLedger(
+  tenantId: number,
+  asOfMonth: string,
+  asOfYear: string
+): TenantLedger | null {
+  const ds = loadDataset();
+  const tenant = ds.tenants.find((t) => t.id === tenantId);
+  if (!tenant) return null;
+  const asOfKey = keyFromYM(asOfYear, asOfMonth);
+  const leases = ds.leases.filter((l) => l.tenantId === tenantId);
+
+  const dueRows: DueRow[] = [];
+  for (const l of leases) {
+    const startK = dateKey(l.agreementStart);
+    if (startK === null) continue;
+    const fromK = Math.max(startK, asOfKey - 23);
+    for (let k = fromK; k <= asOfKey; k++) {
+      const y = Math.floor(k / 12);
+      const m = MONTHS[k % 12];
+      const cols = ds.collections.filter(
+        (c) =>
+          c.leaseId === l.id && c.rentMonth === m && c.rentYear === String(y)
+      );
+      const collected = cols
+        .filter((c) => c.status === "DONE")
+        .reduce((s, c) => s + c.rent, 0);
+      const total = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+      let status: DueRow["status"];
+      if (collected >= total) status = "PAID";
+      else if (collected > 0) status = "PARTIAL";
+      else status = k < asOfKey ? "OVERDUE" : "DUE";
+      if (status !== "PAID") {
+        dueRows.push({
+          leaseId: l.id,
+          month: m,
+          year: String(y),
+          propertyName: l.propertyName,
+          unitName: l.unitName,
+          rent: l.rent,
+          gasBill: l.gasBill,
+          serviceCharge: l.serviceCharge,
+          otherBill: l.otherBill,
+          total,
+          collected,
+          remaining: total - collected,
+          status,
+        });
+      }
+    }
+  }
+  // oldest first — pay previous dues before current
+  dueRows.sort(
+    (a, b) => keyFromYM(a.year, a.month) - keyFromYM(b.year, b.month)
+  );
+
+  const recentCollections = ds.collections
+    .filter((c) => c.tenantId === tenantId)
+    .sort((a, b) => {
+      const da = a.receiveDate?.getTime() ?? 0;
+      const db = b.receiveDate?.getTime() ?? 0;
+      return db - da;
+    })
+    .slice(0, 6)
+    .map((c) => ({
+      id: c.id,
+      month: c.rentMonth,
+      year: c.rentYear,
+      rent: c.rent,
+      receiveDate: c.receiveDate ? c.receiveDate.toISOString() : null,
+      status: c.status,
+    }));
+
+  return {
+    tenant: {
+      id: tenant.id,
+      name: tenant.name,
+      mobile: tenant.mobile,
+      code: tenant.code,
+      status: tenant.status,
+      advanceBalance: tenantAdvanceBalance(tenantId, ds),
+    },
+    leases: leases.map((l) => ({
+      id: l.id,
+      propertyName: l.propertyName,
+      unitName: l.unitName,
+      rent: l.rent,
+      status: l.status,
+    })),
+    dueRows,
+    outstandingTotal: dueRows.reduce((s, r) => s + r.remaining, 0),
+    outstandingCount: dueRows.length,
+    recentCollections,
+  };
+}
+
+export interface CollectPayload {
+  tenantId: number;
+  leaseId: number;
+  month: string;
+  year: string;
+  rent: number;
+  gasBill: number;
+  serviceCharge: number;
+  otherBill: number;
+  method: "CASH" | "BANK" | "MOBILE_BANK";
+  advanceAdjust: number;
+  payLater: boolean;
+  note: string;
+  receiveDate: string; // ISO
+}
+
+export interface Receipt {
+  receiptNo: string;
+  receiptId: number;
+  date: string;
+  tenantName: string;
+  tenantMobile: string | null;
+  tenantCode: string;
+  propertyName: string;
+  unitName: string;
+  leaseId: number;
+  month: string;
+  year: string;
+  lineItems: Array<{ label: string; amount: number }>;
+  total: number;
+  advanceAdjusted: number;
+  netPayable: number;
+  method: string;
+  payLater: boolean;
+  note: string;
+  qrData: string;
+}
+
+export function collectRent(p: CollectPayload): {
+  ok: boolean;
+  error?: string;
+  receipt?: Receipt;
+} {
+  const ds = loadDataset();
+  const tenant = ds.tenants.find((t) => t.id === p.tenantId);
+  const lease = ds.leases.find((l) => l.id === p.leaseId);
+  if (!tenant) return { ok: false, error: "Tenant not found" };
+  if (!lease) return { ok: false, error: "Lease not found" };
+
+  const total =
+    Number(p.rent) + Number(p.gasBill) + Number(p.serviceCharge) + Number(p.otherBill);
+  if (total <= 0) return { ok: false, error: "Amount must be greater than zero" };
+
+  const receive = p.receiveDate ? new Date(p.receiveDate) : new Date();
+  const id = nextCollectionId++;
+
+  // record the collection
+  ds.collections.push({
+    id,
+    leaseId: lease.id,
+    tenantId: tenant.id,
+    rent: Number(p.rent),
+    gasBill: Number(p.gasBill),
+    moylarBill: 0,
+    serviceCharge: Number(p.serviceCharge),
+    otherBill: Number(p.otherBill),
+    rentMonth: p.month,
+    rentYear: p.year,
+    receiveDate: receive,
+    status: p.payLater ? "PENDING" : "DONE",
+  });
+
+  // advance adjustment
+  let advanceAdjusted = 0;
+  if (!p.payLater && p.advanceAdjust > 0) {
+    const avail = tenantAdvanceBalance(tenant.id, ds);
+    advanceAdjusted = Math.min(Number(p.advanceAdjust), avail, total);
+    if (advanceAdjusted > 0) {
+      tenantAdjustments.set(
+        tenant.id,
+        (tenantAdjustments.get(tenant.id) ?? 0) + advanceAdjusted
+      );
+    }
+  }
+
+  // ledger transaction (cash actually received excludes the advance-adjusted part)
+  if (!p.payLater) {
+    const cashIn = Math.max(0, total - advanceAdjusted);
+    if (cashIn > 0) {
+      ds.txns.push({
+        id: nextTxnId++,
+        inAmount: cashIn,
+        outAmount: 0,
+        transectionDate: receive,
+        note: `Rent collection — ${tenant.name} — ${p.month} ${p.year}`,
+        type: "INCOME",
+      });
+    }
+  }
+
+  const receiptNo = `RP-${p.year}${String(monthIndex(p.month) + 1).padStart(2, "0")}-${String(
+    id
+  ).slice(-5)}`;
+
+  const lineItems: { label: string; amount: number }[] = [
+    { label: "Rent", amount: Number(p.rent) },
+  ];
+  if (p.gasBill) lineItems.push({ label: "Gas Bill", amount: Number(p.gasBill) });
+  if (p.serviceCharge) lineItems.push({ label: "Service Charge", amount: Number(p.serviceCharge) });
+  if (p.otherBill) lineItems.push({ label: "Other Bill", amount: Number(p.otherBill) });
+
+  const receipt: Receipt = {
+    receiptNo,
+    receiptId: id,
+    date: receive.toISOString(),
+    tenantName: tenant.name,
+    tenantMobile: tenant.mobile,
+    tenantCode: tenant.code,
+    propertyName: lease.propertyName,
+    unitName: lease.unitName,
+    leaseId: lease.id,
+    month: p.month,
+    year: p.year,
+    lineItems,
+    total,
+    advanceAdjusted,
+    netPayable: total - advanceAdjusted,
+    method: p.method,
+    payLater: p.payLater,
+    note: p.note,
+    qrData: `RENTPRO|${receiptNo}|${tenant.code}|${p.month} ${p.year}|${(total - advanceAdjusted).toFixed(2)}`,
+  };
+
+  return { ok: true, receipt };
+}
+
