@@ -1888,3 +1888,277 @@ export function deleteUnit(id: number): { ok: boolean; error?: string } {
   return { ok: true };
 }
 
+// ============================================================================
+// REPORTS — re-create the legacy day-book / client-ledger / yearly reports
+// ============================================================================
+
+export interface DayBookRow {
+  date: string;
+  particulars: string;
+  head: string;
+  income: number;
+  expense: number;
+  balance: number;
+}
+export interface DayBookReport {
+  fromDate: string;
+  toDate: string;
+  opening: number;
+  rows: DayBookRow[];
+  totalIncome: number;
+  totalExpense: number;
+  net: number;
+  closing: number;
+}
+
+function dateOnly(d: Date | null): string | null {
+  if (!d) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+export function getDayBook(fromDate: string, toDate: string): DayBookReport {
+  const ds = loadDataset();
+  const from = fromDate ? new Date(fromDate) : new Date(0);
+  const to = toDate ? new Date(toDate + "T23:59:59") : new Date(8640000000000000);
+
+  const inRange = (d: Date | null) => d !== null && d >= from && d <= to;
+  const beforeRange = (d: Date | null) => d !== null && d < from;
+
+  const opening =
+    ds.txns
+      .filter((t) => beforeRange(t.transectionDate))
+      .reduce((s, t) => s + t.inAmount - t.outAmount, 0);
+
+  const rows: DayBookRow[] = ds.txns
+    .filter((t) => inRange(t.transectionDate))
+    .sort((a, b) => (a.transectionDate!.getTime() - b.transectionDate!.getTime()))
+    .map((t) => ({
+      date: dateOnly(t.transectionDate)!,
+      particulars: t.note ?? "",
+      head: t.accountHeadName || (t.inAmount > 0 ? "Income" : "Expense"),
+      income: t.inAmount,
+      expense: t.outAmount,
+      balance: 0,
+    }));
+
+  let running = opening;
+  for (const r of rows) {
+    running += r.income - r.expense;
+    r.balance = running;
+  }
+
+  const totalIncome = rows.reduce((s, r) => s + r.income, 0);
+  const totalExpense = rows.reduce((s, r) => s + r.expense, 0);
+  return {
+    fromDate: dateOnly(from)!,
+    toDate: dateOnly(to)!,
+    opening,
+    rows,
+    totalIncome,
+    totalExpense,
+    net: totalIncome - totalExpense,
+    closing: running,
+  };
+}
+
+export interface YearlyMonth {
+  month: string;
+  rentCollected: number;
+  income: number;
+  expense: number;
+  net: number;
+}
+export interface YearlyReport {
+  year: string;
+  months: YearlyMonth[];
+  totalRentCollected: number;
+  totalIncome: number;
+  totalExpense: number;
+  totalNet: number;
+}
+
+export function getYearlyReport(year: string): YearlyReport {
+  const ds = loadDataset();
+  const months: YearlyMonth[] = [];
+  for (let mi = 0; mi < 12; mi++) {
+    const m = MONTHS[mi];
+    const rentCollected = ds.collections
+      .filter((c) => c.rentYear === year && c.rentMonth === m && c.status === "DONE")
+      .reduce((s, c) => s + c.rent, 0);
+    const txns = ds.txns.filter(
+      (t) => t.transectionDate && String(t.transectionDate.getFullYear()) === year && MONTHS[t.transectionDate.getMonth()] === m
+    );
+    const income = txns.reduce((s, t) => s + t.inAmount, 0);
+    const expense = txns.reduce((s, t) => s + t.outAmount, 0);
+    months.push({ month: m, rentCollected, income, expense, net: income - expense });
+  }
+  return {
+    year,
+    months,
+    totalRentCollected: months.reduce((s, m) => s + m.rentCollected, 0),
+    totalIncome: months.reduce((s, m) => s + m.income, 0),
+    totalExpense: months.reduce((s, m) => s + m.expense, 0),
+    totalNet: months.reduce((s, m) => s + m.net, 0),
+  };
+}
+
+export interface AccountHeadRow {
+  headId: number | null;
+  head: string;
+  type: string;
+  income: number;
+  expense: number;
+  net: number;
+  count: number;
+}
+export interface AccountHeadReport {
+  month: string;
+  year: string;
+  rows: AccountHeadRow[];
+  totalIncome: number;
+  totalExpense: number;
+  totalNet: number;
+}
+
+export function getAccountHeadReport(month: string, year: string): AccountHeadReport {
+  const ds = loadDataset();
+  const map = new Map<string, AccountHeadRow>();
+  for (const t of ds.txns) {
+    if (!t.transectionDate) continue;
+    if (String(t.transectionDate.getFullYear()) !== year) continue;
+    if (MONTHS[t.transectionDate.getMonth()] !== month) continue;
+    const key = String(t.accountHeadId ?? "—");
+    const head = t.accountHeadName || "Uncategorized";
+    const ex = map.get(key) ?? {
+      headId: t.accountHeadId,
+      head,
+      type: t.type,
+      income: 0, expense: 0, net: 0, count: 0,
+    };
+    ex.income += t.inAmount;
+    ex.expense += t.outAmount;
+    ex.net += t.inAmount - t.outAmount;
+    ex.count += 1;
+    ex.head = head;
+    map.set(key, ex);
+  }
+  const rows = [...map.values()].sort((a, b) => b.net - a.net);
+  return {
+    month, year, rows,
+    totalIncome: rows.reduce((s, r) => s + r.income, 0),
+    totalExpense: rows.reduce((s, r) => s + r.expense, 0),
+    totalNet: rows.reduce((s, r) => s + r.net, 0),
+  };
+}
+
+export interface LedgerEntry {
+  date: string;
+  particulars: string;
+  debit: number; // tenant is charged (rent due)
+  credit: number; // tenant paid (collection)
+  balance: number; // running outstanding
+}
+export interface ClientLedgerStatement {
+  tenant: { id: number; name: string; code: string; mobile: string | null; status: string; advanceBalance: number };
+  leases: Array<{ id: number; propertyName: string; unitName: string; rent: number }>;
+  asOfMonth: string;
+  asOfYear: string;
+  openingAdvance: number;
+  entries: LedgerEntry[];
+  closingOutstanding: number;
+}
+
+export function getClientLedgerStatement(
+  tenantId: number,
+  asOfMonth: string,
+  asOfYear: string
+): ClientLedgerStatement | null {
+  const ds = loadDataset();
+  const tenant = ds.tenants.find((t) => t.id === tenantId);
+  if (!tenant) return null;
+  const leases = ds.leases.filter((l) => l.tenantId === tenantId);
+  const asOfKey = keyFromYM(asOfYear, asOfMonth);
+
+  // collect all relevant dated events: rent due (per month per lease) + collections
+  interface Ev { date: string; particulars: string; debit: number; credit: number; }
+  const evs: Ev[] = [];
+
+  // rent dues (one per month per lease covering the month, up to as-of)
+  for (const l of leases) {
+    const startK = dateKey(l.agreementStart);
+    if (startK === null) continue;
+    const fromK = Math.max(startK, asOfKey - 23);
+    for (let k = fromK; k <= asOfKey; k++) {
+      const y = String(Math.floor(k / 12));
+      const m = MONTHS[k % 12];
+      const due = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+      if (due > 0) {
+        evs.push({ date: `${y}-${String((k % 12) + 1).padStart(2, "0")}-01`, particulars: `Rent due — ${m} ${y} — ${l.unitName}`, debit: due, credit: 0 });
+      }
+    }
+  }
+  // collections (credits)
+  for (const c of ds.collections.filter((c) => c.tenantId === tenantId && c.status === "DONE")) {
+    const d = dateOnly(c.receiveDate) ?? `${c.rentYear}-${String(MONTHS.indexOf(c.rentMonth) + 1).padStart(2, "0")}-01`;
+    evs.push({ date: d, particulars: `Payment — ${c.rentMonth} ${c.rentYear} — ৳${c.rent}`, debit: 0, credit: c.rent });
+  }
+
+  evs.sort((a, b) => a.date.localeCompare(b.date));
+
+  let running = 0;
+  const entries: LedgerEntry[] = evs.map((e) => {
+    running += e.debit - e.credit;
+    return { ...e, balance: running };
+  });
+
+  return {
+    tenant: {
+      id: tenant.id, name: tenant.name, code: tenant.code,
+      mobile: tenant.mobile, status: tenant.status,
+      advanceBalance: tenantAdvanceBalance(tenantId, ds),
+    },
+    leases: leases.map((l) => ({ id: l.id, propertyName: l.propertyName, unitName: l.unitName, rent: l.rent })),
+    asOfMonth, asOfYear,
+    openingAdvance: tenantAdvanceBalance(tenantId, ds),
+    entries,
+    closingOutstanding: running,
+  };
+}
+
+export interface ClientDueRow {
+  tenantId: number;
+  name: string;
+  code: string;
+  mobile: string | null;
+  status: string;
+  outstandingTotal: number;
+  outstandingCount: number;
+  advanceBalance: number;
+}
+export interface ClientDueReport {
+  month: string;
+  year: string;
+  rows: ClientDueRow[];
+  totalOutstanding: number;
+  totalTenants: number;
+}
+
+export function getClientDueReport(asOfMonth: string, asOfYear: string): ClientDueReport {
+  const all = getTenants(asOfMonth, asOfYear);
+  const rows = all
+    .filter((t) => t.outstandingTotal > 0)
+    .map((t) => ({
+      tenantId: t.id, name: t.name, code: t.code, mobile: t.mobile,
+      status: t.status, outstandingTotal: t.outstandingTotal,
+      outstandingCount: t.outstandingCount, advanceBalance: t.advanceBalance,
+    }))
+    .sort((a, b) => b.outstandingTotal - a.outstandingTotal);
+  return {
+    month: asOfMonth,
+    year: asOfYear,
+    rows,
+    totalOutstanding: rows.reduce((s, r) => s + r.outstandingTotal, 0),
+    totalTenants: rows.length,
+  };
+}
+

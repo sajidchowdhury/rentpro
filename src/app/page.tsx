@@ -14,9 +14,10 @@ import { ExpensesView } from "@/components/rentpro/expenses";
 import { VacateView } from "@/components/rentpro/vacate";
 import { PropertiesView } from "@/components/rentpro/properties";
 import { TenantsView } from "@/components/rentpro/tenants";
+import { ReportsView } from "@/components/rentpro/reports";
 import { toast } from "sonner";
 
-type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate" | "properties" | "tenants";
+type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate" | "properties" | "tenants" | "reports";
 
 interface MonthOpt { year: string; month: string }
 
@@ -51,10 +52,9 @@ const NAV: { id: View; label: string; labelBn: string; icon: any; active: boolea
   { id: "vacate", label: "Vacate & Settle", labelBn: "ভাড়া ছাড়", icon: DoorOpen, active: true },
   { id: "properties", label: "Properties", labelBn: "ভবন", icon: Building2, active: true },
   { id: "tenants", label: "Tenants", labelBn: "ভাড়াটিয়া", icon: Users, active: true },
+  { id: "reports", label: "Reports", labelBn: "রিপোর্ট", icon: BarChart3, active: true },
 ];
-const NAV_DISABLED = [
-  { label: "Reports", labelBn: "রিপোর্ট", icon: BarChart3 },
-];
+const NAV_DISABLED: { label: string; labelBn: string; icon: any }[] = [];
 
 export default function RentProPage() {
   const [months, setMonths] = useState<MonthOpt[]>([]);
@@ -86,7 +86,7 @@ export default function RentProPage() {
   const refresh = useCallback(async () => {
     if (!month || !year) return;
     // Collect, Expenses, Vacate & Properties views manage their own data fetching.
-    if (view === "collect" || view === "expenses" || view === "vacate" || view === "properties" || view === "tenants") {
+    if (view === "collect" || view === "expenses" || view === "vacate" || view === "properties" || view === "tenants" || view === "reports") {
       setLoading(false);
       return;
     }
@@ -247,6 +247,8 @@ export default function RentProPage() {
               <PropertiesView />
             ) : view === "tenants" ? (
               <TenantsView month={month} year={year} onCollect={(tid) => { setCollectTenantId(tid); setView("collect"); }} />
+            ) : view === "reports" ? (
+              <ReportsView month={month} year={year} />
             ) : (
               <div className="text-muted-foreground">No data.</div>
             )}

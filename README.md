@@ -2,7 +2,7 @@
 
 > Modern Rent & Property Management System — a clean, fast replacement for the legacy `osudlagb_home_rent` PHP/MySQL app.
 
-**Status:** Phase 1 prototype — Dashboard (with due-expenses card) + Generate Rent + Unified Rent Collection + Recurring Expense Tracker + Vacate & Settlement Wizard + Flexible Property Editor + **Tenants directory** running on real data.
+**Status:** Phase 1 prototype — Dashboard (due-expenses card) + Generate Rent + Unified Rent Collection + Recurring Expense Tracker + Vacate & Settlement Wizard + Flexible Property Editor + Tenants directory + **Reports** running on real data.
 
 ## What is this?
 
@@ -62,7 +62,12 @@ rentpro/
     │       ├── unit/update/route.ts  # edit/retire unit (F4)
     │       ├── unit/delete/route.ts  # delete unit (FK-safe) (F4)
     │       ├── types/route.ts        # property + unit type enums (F4)
-    │       └── tenants-list/route.ts # tenants directory (all tenants + summary)
+    │       ├── tenants-list/route.ts # tenants directory (all tenants + summary)
+    │       ├── report/daybook/route.ts       # day book (date range, running balance)
+    │       ├── report/yearly/route.ts        # yearly month-by-month
+    │       ├── report/account-head/route.ts  # income/expense by account head
+    │       ├── report/client-ledger/route.ts  # per-tenant statement
+    │       └── report/client-due/route.ts    # all tenants w/ outstanding
     ├── components/
     │   ├── rentpro/
     │   │   ├── dashboard.tsx        # KPIs, trend chart, due/vacant/recent lists
@@ -71,7 +76,8 @@ rentpro/
     │   │   ├── expenses.tsx         # recurring expense tracker: due/missing, back-fill, predictions (F3)
     │   │   ├── vacate.tsx           # 5-step vacate & settlement wizard + printable statement (F5)
     │   │   ├── properties.tsx       # flexible property/unit editor: add rooms/spaces/rooftops anytime (F4)
-    │   │   └── tenants.tsx         # tenants directory: search/filter, leases+advance+outstanding, jump-to-collect
+    │   │   ├── tenants.tsx         # tenants directory: search/filter, leases+advance+outstanding, jump-to-collect
+    │   │   └── reports.tsx         # 5 reports: day book, yearly, account-head-wise, client ledger, client due (printable)
     │   └── ui/                      # full shadcn/ui component set
     └── lib/
         ├── legacyParser.ts          # SQL dump parser (mirrors scripts/lib)
