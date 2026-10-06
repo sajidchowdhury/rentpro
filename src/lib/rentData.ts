@@ -419,6 +419,23 @@ export function getDataSource(): "real" | "demo" {
   return (S.dataSource ?? "real") as "real" | "demo";
 }
 
+/** Clear all data-derived + user-action caches so the next read re-scans the
+ *  dump fresh. Used by the sidebar "Reload data" action — lets you mount the
+ *  dump and pick it up without a full server restart. Returns the new source. */
+export function reloadDataSource(): "real" | "demo" {
+  S.cache = null;
+  S.expenseRecs = null;
+  S.dataSource = null;
+  S.organizations = null;
+  S.activeOrgId = null;
+  S.generatedMonths.clear();
+  S.tenantAdjustments.clear();
+  S.settlements.length = 0;
+  loadDataset();          // re-scan findDump() -> real or demo
+  ensureOrganizations();  // re-seed orgs from the (new) cache
+  return getDataSource();
+}
+
 // --- demo seed (used when no legacy dump is mounted) -----------------------
 // A small, representative dataset so the app is fully explorable out of the
 // box (login + all screens) even before you mount your real dump. Demo users

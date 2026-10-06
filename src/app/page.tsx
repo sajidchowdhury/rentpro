@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useSession, signOut } from "next-auth/react";
-import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp, Wallet, DoorOpen, Globe, ShieldCheck, LogOut } from "lucide-react";
+import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp, Wallet, DoorOpen, Globe, ShieldCheck, LogOut, RefreshCw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -124,6 +124,21 @@ export default function RentProPage() {
     } catch { toast.error("Failed to switch org"); }
   }, [refreshOrg]);
 
+  // F9/data: re-scan for the dump and reload the in-memory dataset, without a
+  // server restart. Lets you mount the dump and pick it up live.
+  const [reloading, setReloading] = useState(false);
+  const reloadData = useCallback(async () => {
+    setReloading(true);
+    try {
+      const r = await fetch("/api/reload-data", { method: "POST" });
+      const d = await r.json();
+      setDash(null); setGen(null); // force refetch of view data
+      await refreshOrg();
+      toast.success(d.dataSource === "real" ? "Loaded real dump data" : "No dump found — using demo data");
+    } catch { toast.error("Reload failed"); }
+    finally { setReloading(false); }
+  }, [refreshOrg]);
+
   // fetch view data when month/year/view change
   const refresh = useCallback(async () => {
     if (!month || !year) return;
@@ -207,8 +222,13 @@ export default function RentProPage() {
         <aside className="hidden md:flex w-60 shrink-0 flex-col border-r bg-background">
           <div className="flex items-center gap-2 px-5 h-16 border-b">
             <div className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold">{(activeOrg?.name ?? "RentPro").slice(0, 1)}</div>
-            <div className="min-w-0">
-              <div className="font-semibold leading-tight truncate">{activeOrg?.name ?? "RentPro"}</div>
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold leading-tight truncate flex items-center gap-1.5">
+                <span className="truncate">{activeOrg?.name ?? "RentPro"}</span>
+                <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded ${dataSource === "real" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" : "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"}`}>
+                  {dataSource === "real" ? "REAL" : "DEMO"}
+                </span>
+              </div>
               <div className="text-[10px] text-muted-foreground leading-tight">{activeOrg ? (activeOrg.isOwner ? "Owner org" : activeOrg.plan === "TRIAL" ? "Trial client" : "Client") : "Property & Rent Mgmt"}</div>
             </div>
           </div>
@@ -241,9 +261,15 @@ export default function RentProPage() {
                 <LogOut className="size-3.5" />
               </Button>
             </div>
-            <div className="flex items-center gap-2 rounded-md bg-emerald-50 dark:bg-emerald-950/40 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
-              <Database className="size-3.5 shrink-0" />
-              <span>Live: real dump data</span>
+            <div className="flex items-center gap-2 rounded-md bg-muted/60 px-2 py-1.5 text-xs">
+              <Database className={`size-3.5 shrink-0 ${dataSource === "real" ? "text-emerald-600" : "text-amber-600"}`} />
+              <span className="flex-1 truncate">
+                {dataSource === "real" ? "Real dump data" : "Demo data"}
+              </span>
+              <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px] gap-1" onClick={reloadData} disabled={reloading} title="Re-scan for the dump and reload">
+                {reloading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                Reload
+              </Button>
             </div>
           </div>
         </aside>
