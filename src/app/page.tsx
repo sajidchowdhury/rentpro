@@ -12,9 +12,10 @@ import { GenerateRentView } from "@/components/rentpro/generate-rent";
 import { CollectRentView } from "@/components/rentpro/collect-rent";
 import { ExpensesView } from "@/components/rentpro/expenses";
 import { VacateView } from "@/components/rentpro/vacate";
+import { PropertiesView } from "@/components/rentpro/properties";
 import { toast } from "sonner";
 
-type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate";
+type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate" | "properties";
 
 interface MonthOpt { year: string; month: string }
 
@@ -43,10 +44,10 @@ const NAV: { id: View; label: string; labelBn: string; icon: any; active: boolea
   { id: "collect", label: "Collect Rent", labelBn: "কালেকশন", icon: Wallet, active: true },
   { id: "expenses", label: "Expenses", labelBn: "খরচ", icon: Receipt, active: true },
   { id: "vacate", label: "Vacate & Settle", labelBn: "ভাড়া ছাড়", icon: DoorOpen, active: true },
+  { id: "properties", label: "Properties", labelBn: "ভবন", icon: Building2, active: true },
 ];
 const NAV_DISABLED = [
   { label: "Tenants", labelBn: "ভাড়াটিয়া", icon: Users },
-  { label: "Properties", labelBn: "ভবন", icon: Building2 },
   { label: "Reports", labelBn: "রিপোর্ট", icon: BarChart3 },
 ];
 
@@ -78,8 +79,8 @@ export default function RentProPage() {
   // fetch view data when month/year/view change
   const refresh = useCallback(async () => {
     if (!month || !year) return;
-    // Collect, Expenses & Vacate views manage their own data fetching.
-    if (view === "collect" || view === "expenses" || view === "vacate") {
+    // Collect, Expenses, Vacate & Properties views manage their own data fetching.
+    if (view === "collect" || view === "expenses" || view === "vacate" || view === "properties") {
       setLoading(false);
       return;
     }
@@ -236,6 +237,8 @@ export default function RentProPage() {
               <ExpensesView month={month} year={year} />
             ) : view === "vacate" ? (
               <VacateView month={month} year={year} />
+            ) : view === "properties" ? (
+              <PropertiesView />
             ) : (
               <div className="text-muted-foreground">No data.</div>
             )}

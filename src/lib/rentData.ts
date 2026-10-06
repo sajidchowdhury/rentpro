@@ -115,6 +115,8 @@ interface RentProStore {
   nextTxnId: number;
   nextSettlementId: number;
   settlements: SettlementRecord[];
+  nextPropertyId: number;
+  nextUnitId: number;
 }
 function getStore(): RentProStore {
   const g = globalThis as unknown as { __rentproStore__?: RentProStore };
@@ -128,14 +130,18 @@ function getStore(): RentProStore {
       nextTxnId: 1_000_000,
       nextSettlementId: 1_000_000,
       settlements: [],
+      nextPropertyId: 1_000_000,
+      nextUnitId: 1_000_000,
     };
   }
-  // Migrate: an older code version (pre-F5) may have created the store without
-  // the settlements fields. HMR keeps globalThis across reloads, so add any
-  // missing fields here rather than crashing on S.settlements.push().
+  // Migrate: an older code version may have created the store without newer
+  // fields. HMR keeps globalThis across reloads, so add any missing fields
+  // here rather than crashing on S.<field>.
   const s = g.__rentproStore__;
   if (s.settlements === undefined) s.settlements = [];
   if (s.nextSettlementId === undefined) s.nextSettlementId = 1_000_000;
+  if (s.nextPropertyId === undefined) s.nextPropertyId = 1_000_000;
+  if (s.nextUnitId === undefined) s.nextUnitId = 1_000_000;
   if (s.expenseRecs === undefined) s.expenseRecs = null;
   if (s.generatedMonths === undefined) s.generatedMonths = new Set();
   if (s.tenantAdjustments === undefined) s.tenantAdjustments = new Map();
@@ -1615,5 +1621,169 @@ export function settleLease(
   S.settlements.push(record);
 
   return { ok: true, settlement: record };
+}
+
+// ============================================================================
+// F4 — FLEXIBLE PROPERTY EDITOR
+// ----------------------------------------------------------------------------
+// Properties (Building / Open Space / Rooftop / Mixed) contain Units (Shop /
+// Room / Open Space / Rooftop Slot / Parking / Godown / Other). You can add,
+// rename, retype, retire, or delete units at any time — even long after the
+// property exists — and create standalone open spaces / rooftops that aren't
+// tied to a building. Unit occupancy is derived live from active leases:
+// INACTIVE (user-retired) > OCCUPIED (has an active lease) > VACANT.
+// ============================================================================
+
+export type PropertyType = "BUILDING" | "OPEN_SPACE" | "ROOFTOP" | "MIXED";
+export type UnitType = "SHOP" | "ROOM" | "OPEN_SPACE" | "ROOFTOP_SLOT" | "PARKING" | "GODOWN" | "OTHER";
+
+export interface PropertySummary {
+  id: number;
+  name: string;
+  type: PropertyType;
+  unitCount: number;
+  occupied: number;
+  vacant: number;
+  inactive: number;
+}
+export interface UnitDetail {
+  id: number;
+  propertyId: number;
+  name: string;
+  type: UnitType;
+  defaultRent: number;
+  notes: string | null;
+  status: "OCCUPIED" | "VACANT" | "INACTIVE";
+  lease: { leaseId: number; tenantName: string; rent: number } | null;
+}
+export interface PropertyDetail {
+  property: { id: number; name: string; type: PropertyType };
+  units: UnitDetail[];
+  occupied: number;
+  vacant: number;
+  inactive: number;
+}
+
+const PROPERTY_TYPES: PropertyType[] = ["BUILDING", "OPEN_SPACE", "ROOFTOP", "MIXED"];
+const UNIT_TYPES: UnitType[] = ["SHOP", "ROOM", "OPEN_SPACE", "ROOFTOP_SLOT", "PARKING", "GODOWN", "OTHER"];
+
+export function getPropertyTypes(): PropertyType[] { return [...PROPERTY_TYPES]; }
+export function getUnitTypes(): UnitType[] { return [...UNIT_TYPES]; }
+
+function unitLiveStatus(unit: Unit, ds: Dataset): "OCCUPIED" | "VACANT" | "INACTIVE" {
+  if (unit.status === "INACTIVE") return "INACTIVE";
+  const hasActiveLease = ds.leases.some(
+    (l) => l.unitId === unit.id && l.status === "ACTIVE"
+  );
+  return hasActiveLease ? "OCCUPIED" : "VACANT";
+}
+
+export function getProperties(): PropertySummary[] {
+  const ds = loadDataset();
+  return ds.properties
+    .map((p) => {
+      const units = ds.units.filter((u) => u.propertyId === p.id);
+      let occupied = 0, vacant = 0, inactive = 0;
+      for (const u of units) {
+        const s = unitLiveStatus(u, ds);
+        if (s === "OCCUPIED") occupied++;
+        else if (s === "VACANT") vacant++;
+        else inactive++;
+      }
+      return {
+        id: p.id, name: p.name, type: p.type as PropertyType,
+        unitCount: units.length, occupied, vacant, inactive,
+      };
+    })
+    .sort((a, b) => a.id - b.id);
+}
+
+export function getPropertyDetail(propertyId: number): PropertyDetail | null {
+  const ds = loadDataset();
+  const property = ds.properties.find((p) => p.id === propertyId);
+  if (!property) return null;
+  const units = ds.units
+    .filter((u) => u.propertyId === propertyId)
+    .map((u) => {
+      const lease = ds.leases.find((l) => l.unitId === u.id && l.status === "ACTIVE") ?? null;
+      return {
+        id: u.id, propertyId: u.propertyId, name: u.name,
+        type: (u.type as UnitType) || "ROOM", defaultRent: u.defaultRent,
+        notes: u.notes, status: unitLiveStatus(u, ds),
+        lease: lease ? { leaseId: lease.id, tenantName: lease.tenantName, rent: lease.rent } : null,
+      };
+    })
+    .sort((a, b) => a.id - b.id);
+  const occupied = units.filter((u) => u.status === "OCCUPIED").length;
+  const vacant = units.filter((u) => u.status === "VACANT").length;
+  const inactive = units.filter((u) => u.status === "INACTIVE").length;
+  return {
+    property: { id: property.id, name: property.name, type: property.type as PropertyType },
+    units, occupied, vacant, inactive,
+  };
+}
+
+export function addProperty(name: string, type: PropertyType): { ok: boolean; error?: string; id?: number } {
+  const ds = loadDataset();
+  if (!name.trim()) return { ok: false, error: "Name is required" };
+  const id = S.nextPropertyId++;
+  ds.properties.push({ id, name: name.trim(), type, unitCount: 0 });
+  return { ok: true, id };
+}
+
+export function updateProperty(id: number, name: string, type: PropertyType): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const p = ds.properties.find((x) => x.id === id);
+  if (!p) return { ok: false, error: "Property not found" };
+  if (!name.trim()) return { ok: false, error: "Name is required" };
+  p.name = name.trim();
+  p.type = type;
+  return { ok: true };
+}
+
+export function addUnit(
+  propertyId: number, name: string, type: UnitType, defaultRent: number, notes: string
+): { ok: boolean; error?: string; id?: number } {
+  const ds = loadDataset();
+  const p = ds.properties.find((x) => x.id === propertyId);
+  if (!p) return { ok: false, error: "Property not found" };
+  if (!name.trim()) return { ok: false, error: "Unit name is required" };
+  const id = S.nextUnitId++;
+  ds.units.push({
+    id, propertyId, name: name.trim(), type,
+    defaultRent: Number(defaultRent) || 0, notes: notes || null, status: "VACANT",
+  });
+  return { ok: true, id };
+}
+
+export function updateUnit(
+  id: number, name: string, type: UnitType, defaultRent: number, notes: string,
+  status: "VACANT" | "INACTIVE"
+): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const u = ds.units.find((x) => x.id === id);
+  if (!u) return { ok: false, error: "Unit not found" };
+  if (!name.trim()) return { ok: false, error: "Unit name is required" };
+  u.name = name.trim();
+  u.type = type;
+  u.defaultRent = Number(defaultRent) || 0;
+  u.notes = notes || null;
+  // INACTIVE retires a unit (hidden from occupancy). Re-activating sets VACANT.
+  u.status = status === "INACTIVE" ? "INACTIVE" : "VACANT";
+  return { ok: true };
+}
+
+export function deleteUnit(id: number): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const u = ds.units.find((x) => x.id === id);
+  if (!u) return { ok: false, error: "Unit not found" };
+  // FK integrity: never delete a unit that has any lease history.
+  const hasLease = ds.leases.some((l) => l.unitId === id);
+  if (hasLease) {
+    return { ok: false, error: "This unit has lease history — retire (set Inactive) instead of deleting." };
+  }
+  const idx = ds.units.findIndex((x) => x.id === id);
+  ds.units.splice(idx, 1);
+  return { ok: true };
 }
 

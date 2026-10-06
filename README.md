@@ -2,7 +2,7 @@
 
 > Modern Rent & Property Management System — a clean, fast replacement for the legacy `osudlagb_home_rent` PHP/MySQL app.
 
-**Status:** Phase 1 prototype — Dashboard + Generate Rent + Unified Rent Collection (F2) + Recurring Expense Tracker (F3) + **Vacate & Settlement Wizard (F5)** running on real data.
+**Status:** Phase 1 prototype — Dashboard + Generate Rent + Unified Rent Collection (F2) + Recurring Expense Tracker (F3) + Vacate & Settlement Wizard (F5) + **Flexible Property Editor (F4)** running on real data.
 
 ## What is this?
 
@@ -54,14 +54,22 @@ rentpro/
     │       ├── record-expense-batch/route.ts # back-fill all missing months (F3)
     │       ├── active-leases/route.ts     # active leases with outstanding + advance (F5)
     │       ├── settlement-preview/route.ts # outstanding + suggested refund/adjust split (F5)
-    │       └── settle-lease/route.ts     # settle a lease (close, vacate, refund/adjust) (F5)
+    │       ├── settle-lease/route.ts     # settle a lease (close, vacate, refund/adjust) (F5)
+    │       ├── properties/route.ts    # list + add property (F4)
+    │       ├── property/route.ts      # property detail with units (F4)
+    │       ├── property/update/route.ts # edit property (F4)
+    │       ├── unit/route.ts         # add unit (F4)
+    │       ├── unit/update/route.ts  # edit/retire unit (F4)
+    │       ├── unit/delete/route.ts  # delete unit (FK-safe) (F4)
+    │       └── types/route.ts        # property + unit type enums (F4)
     ├── components/
     │   ├── rentpro/
     │   │   ├── dashboard.tsx        # KPIs, trend chart, due/vacant/recent lists
     │   │   ├── generate-rent.tsx    # monthly rent auto-generation screen
     │   │   ├── collect-rent.tsx     # unified collection: picker, due list, collect dialog, receipt+QR (F2)
     │   │   ├── expenses.tsx         # recurring expense tracker: due/missing, back-fill, predictions (F3)
-    │   │   └── vacate.tsx           # 5-step vacate & settlement wizard + printable statement (F5)
+    │   │   ├── vacate.tsx           # 5-step vacate & settlement wizard + printable statement (F5)
+    │   │   └── properties.tsx       # flexible property/unit editor: add rooms/spaces/rooftops anytime (F4)
     │   └── ui/                      # full shadcn/ui component set
     └── lib/
         ├── legacyParser.ts          # SQL dump parser (mirrors scripts/lib)
