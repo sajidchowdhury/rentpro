@@ -263,7 +263,10 @@ function loadDataset(): Dataset {
     return demo;
   }
 
-  const sql = readFileSync(path, "utf-8");
+  // turbopackIgnore: the dump path is dynamic (LEGACY_SQL_PATH), so Turbopack
+  // can't statically trace it and would otherwise copy the whole project into
+  // the standalone bundle. The file is read at runtime from a mounted volume.
+  const sql = readFileSync(/*turbopackIgnore: true*/ path, "utf-8");
   const parsed = parseLegacyDump(sql);
 
   const rows = (t: string) => {
