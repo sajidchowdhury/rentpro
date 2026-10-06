@@ -12,6 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import { existsSync } from "node:fs";
+import bcrypt from "bcryptjs";
 import {
   parseLegacyDump,
   rowToObject,
@@ -206,6 +207,20 @@ interface Dataset {
     email: string | null;
     logo: string | null;
   } | null;
+  users: AuthUser[];
+}
+
+// F2 (point 2) — auth + RBAC. Users come from the dump's `admin` table;
+// passwords are bcrypt ($2y$ -> $2b$ for Node). A demo Data-Entry user is
+// added so role-based menu access is demonstrable.
+export type Role = "SUPER_ADMIN" | "ADMIN" | "MANAGER" | "DATA_ENTRY" | "TENANT";
+export interface AuthUser {
+  id: number;
+  username: string;
+  passwordHash: string; // bcrypt, $2b$ (converted from legacy $2y$)
+  displayName: string;
+  role: Role;
+  status: "Active" | "Inactive";
 }
 
 
@@ -239,7 +254,7 @@ function loadDataset(): Dataset {
   const path = findDump();
   if (!path) {
     console.warn("[rentData] No legacy dump found — UI will show empty state.");
-    const empty: Dataset = { properties: [], units: [], tenants: [], leases: [], collections: [], txns: [], accountHeads: [], company: null };
+    const empty: Dataset = { properties: [], units: [], tenants: [], leases: [], collections: [], txns: [], accountHeads: [], company: null, users: [] };
     S.cache = empty;
     return empty;
   }
@@ -360,7 +375,31 @@ function loadDataset(): Dataset {
   }));
   const company = companyRows[0] ?? null;
 
-  const result: Dataset = { properties, units, tenants, leases, collections, txns, accountHeads, company };
+  // F2 (point 2): users for auth — from the dump's `admin` table. Passwords
+  // are bcrypt; convert PHP $2y$ -> Node $2b$. Add a demo Data-Entry user
+  // (same password) so role-based access is demonstrable.
+  const adminRows = rows("admin").map((r) => {
+    let hash = str(r.password);
+    if (hash.startsWith("$2y$")) hash = "$2b$" + hash.slice(4);
+    return {
+      id: num(r.id),
+      username: str(r.username) || String(r.id),
+      passwordHash: hash,
+      displayName: str(r.hr_name) || str(r.username) || `User ${r.id}`,
+      role: (r.user_type === "Admin" ? "ADMIN" : "MANAGER") as Role,
+      status: r.hr_status === "Active" ? ("Active" as const) : ("Inactive" as const),
+    } as AuthUser;
+  }).filter((u) => u.id);
+  const ownerHash = adminRows[0]?.passwordHash ?? "";
+  const users: AuthUser[] = [...adminRows];
+  if (ownerHash && !users.some((u) => u.username === "staff")) {
+    users.push({
+      id: 9001, username: "staff", passwordHash: ownerHash,
+      displayName: "Demo Staff", role: "DATA_ENTRY", status: "Active",
+    });
+  }
+
+  const result: Dataset = { properties, units, tenants, leases, collections, txns, accountHeads, company, users };
   S.cache = result;
   console.log(
     `[rentData] Loaded dump: ${properties.length} properties, ${units.length} units, ${tenants.length} tenants, ${leases.length} leases, ${collections.length} collections, ${txns.length} transactions, ${accountHeads.length} account heads.`
@@ -2347,4 +2386,56 @@ export function activeOrgOwnsData(): boolean {
   ensureOrganizations();
   return S.activeOrgId === OWNER_ORG_ID;
 }
+
+// ============================================================================
+// POINT 2 — AUTH (NextAuth credentials) + ROLE-BASED ACCESS (RBAC)
+// ----------------------------------------------------------------------------
+// verifyCredentials: server-side, called by the NextAuth credentials
+//   provider. Compares the password against the bcrypt hash ($2y$ -> $2b$)
+//   from the dump's `admin` table (or, after migrate:write, the Postgres
+//   `users` table — swap this function to query Prisma in production).
+// getAllowedViews: role -> the set of nav views that role may see.
+// ============================================================================
+
+export type ViewId =
+  | "dashboard" | "generate" | "collect" | "expenses"
+  | "vacate" | "properties" | "tenants" | "reports" | "platform";
+
+export interface AuthenticatedUser {
+  id: number;
+  username: string;
+  displayName: string;
+  role: Role;
+}
+
+export async function verifyCredentials(
+  username: string,
+  password: string
+): Promise<AuthenticatedUser | null> {
+  const ds = loadDataset();
+  const u = ds.users.find(
+    (x) => x.username.toLowerCase() === username.toLowerCase() && x.status === "Active"
+  );
+  if (!u || !u.passwordHash) return null;
+  try {
+    const ok = await bcrypt.compare(password, u.passwordHash);
+    if (!ok) return null;
+  } catch {
+    return null;
+  }
+  return { id: u.id, username: u.username, displayName: u.displayName, role: u.role };
+}
+
+const ROLE_VIEWS: Record<Role, ViewId[]> = {
+  SUPER_ADMIN: ["dashboard", "generate", "collect", "expenses", "vacate", "properties", "tenants", "reports", "platform"],
+  ADMIN: ["dashboard", "generate", "collect", "expenses", "vacate", "properties", "tenants", "reports", "platform"],
+  MANAGER: ["dashboard", "generate", "collect", "expenses", "vacate", "properties", "tenants", "reports"],
+  DATA_ENTRY: ["dashboard", "collect", "expenses", "tenants"],
+  TENANT: ["dashboard"],
+};
+
+export function getAllowedViews(role: Role): ViewId[] {
+  return ROLE_VIEWS[role] ?? ["dashboard"];
+}
+
 

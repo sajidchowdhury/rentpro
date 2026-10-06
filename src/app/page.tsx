@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp, Wallet, DoorOpen, Globe, ShieldCheck } from "lucide-react";
+import { useSession, signOut } from "next-auth/react";
+import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp, Wallet, DoorOpen, Globe, ShieldCheck, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -16,9 +17,11 @@ import { PropertiesView } from "@/components/rentpro/properties";
 import { TenantsView } from "@/components/rentpro/tenants";
 import { ReportsView } from "@/components/rentpro/reports";
 import { PlatformView } from "@/components/rentpro/platform";
+import { LoginForm } from "@/components/rentpro/login-form";
+import { getAllowedViews, ROLE_LABEL, type Role, type ViewId } from "@/lib/rbac";
 import { toast } from "sonner";
 
-type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate" | "properties" | "tenants" | "reports" | "platform";
+type View = ViewId;
 
 interface MonthOpt { year: string; month: string }
 
@@ -174,6 +177,27 @@ export default function RentProPage() {
 
   const monthKey = (m: MonthOpt) => `${m.year}-${m.month}`;
 
+  // ── Point 2: auth gate + role-based nav ──────────────────────────────
+  const { data: session, status } = useSession();
+  const role = (session?.user as any)?.role as Role | undefined;
+  const allowedViews = getAllowedViews(role);
+
+  // if the current view isn't allowed for this role, fall back to dashboard
+  useEffect(() => {
+    if (session && !allowedViews.includes(view)) setView("dashboard");
+  }, [session, allowedViews, view]);
+
+  const visibleNav = NAV.filter((n) => allowedViews.includes(n.id));
+
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen grid place-items-center bg-muted/30">
+        <div className="size-8 rounded-full border-2 border-muted-foreground/30 border-t-primary animate-spin" />
+      </div>
+    );
+  }
+  if (!session) return <LoginForm />;
+
   return (
     <div className="min-h-screen flex flex-col bg-muted/30">
       <div className="flex flex-1">
@@ -187,7 +211,7 @@ export default function RentProPage() {
             </div>
           </div>
           <nav className="flex-1 p-3 space-y-1">
-            {NAV.map((n) => (
+            {visibleNav.map((n) => (
               <button
                 key={n.id}
                 onClick={() => setView(n.id)}
@@ -201,16 +225,20 @@ export default function RentProPage() {
                 <span className={cn("text-[10px]", view === n.id ? "text-primary-foreground/70" : "text-muted-foreground")}>{n.labelBn}</span>
               </button>
             ))}
-            <div className="pt-4 pb-1 px-3 text-[10px] uppercase tracking-wider text-muted-foreground">Coming soon</div>
-            {NAV_DISABLED.map((n) => (
-              <div key={n.label} className="w-full flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground/60 cursor-not-allowed">
-                <n.icon className="size-4" />
-                <span className="flex-1">{n.label}</span>
-                <span className="text-[10px]">{n.labelBn}</span>
-              </div>
-            ))}
           </nav>
-          <div className="p-3 border-t">
+          <div className="p-3 border-t space-y-2">
+            <div className="flex items-center gap-2 rounded-md bg-muted/60 px-3 py-2">
+              <div className="size-7 rounded-full bg-primary text-primary-foreground grid place-items-center text-[10px] font-semibold shrink-0">
+                {(session.user?.name ?? "U").slice(0, 1)}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium truncate">{session.user?.name ?? "User"}</div>
+                <div className="text-[10px] text-muted-foreground">{ROLE_LABEL[role ?? "TENANT"]}</div>
+              </div>
+              <Button size="icon" variant="ghost" className="size-7" onClick={() => signOut()} title="Sign out">
+                <LogOut className="size-3.5" />
+              </Button>
+            </div>
             <div className="flex items-center gap-2 rounded-md bg-emerald-50 dark:bg-emerald-950/40 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
               <Database className="size-3.5 shrink-0" />
               <span>Live: real dump data</span>
@@ -230,7 +258,7 @@ export default function RentProPage() {
               </div>
               {/* mobile view tabs */}
               <div className="md:hidden flex gap-1">
-                {NAV.map((n) => (
+                {visibleNav.map((n) => (
                   <button
                     key={n.id}
                     onClick={() => setView(n.id)}

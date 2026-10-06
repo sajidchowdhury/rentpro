@@ -2,11 +2,26 @@
 
 > Modern Rent & Property Management System — a clean, fast replacement for the legacy `osudlagb_home_rent` PHP/MySQL app.
 
-**Status:** Phase 1 prototype complete — Dashboard + Generate Rent + Unified Rent Collection + Recurring Expense Tracker + Vacate & Settlement Wizard + Flexible Property Editor + Tenants directory + Reports + **Multi-tenant SaaS core (F9)** running on real data.
+**Status:** Phase 1 prototype complete — all PRD features (F1–F5, F9) + Reports + auth/RBAC + Docker/Postgres migration tooling, running on real data.
 
 ## What is this?
 
-RentPro is a ground-up rewrite of an existing Bangla-language rent management system. It keeps **100% of the historical data** (migrated with reconciliation), fixes the daily pain points of the old system, and is built **multi-tenant from day one** so it can later be sold as a SaaS to other property owners.
+RentPro is a ground-up rewrite of an existing Bangla-language rent management system. It keeps **100% of the historical data** (migrated with reconciliation into Postgres via Docker), fixes the daily pain points of the old system, is gated by **NextAuth + role-based access**, and is built **multi-tenant from day one** so it can be sold as a SaaS to other property owners.
+
+## Quick start (local, with Docker)
+
+See **[SETUP.md](./SETUP.md)** for the full guide. In short:
+
+```bash
+docker compose up -d                # 1. start Postgres
+cp .env.example .env                # 2. set DATABASE_URL + LEGACY_SQL_PATH + NEXTAUTH_SECRET
+bun install
+bun run db:migrate                  # 3. create the schema
+bun run migrate:write               # 4. load your legacy dump → Postgres (+ reconciliation report)
+bun run dev                         # 5. http://localhost:3000  →  log in (E1013 / 101010Sajid)
+```
+
+Login roles: `E1013`/`E0001` (Admin — all 9 screens) · `staff` (Data Entry — dashboard + collect + expenses + tenants only).
 
 ## Tech stack
 
@@ -82,11 +97,14 @@ rentpro/
     │   │   ├── properties.tsx       # flexible property/unit editor: add rooms/spaces/rooftops anytime (F4)
     │   │   ├── tenants.tsx         # tenants directory: search/filter, leases+advance+outstanding, jump-to-collect
     │   │   ├── reports.tsx         # 5 reports: day book, yearly, account-head-wise, client ledger, client due (printable)
-    │   │   └── platform.tsx       # SaaS admin: onboard orgs, plans, per-org branding, isolation
+    │   │   ├── platform.tsx       # SaaS admin: onboard orgs, plans, per-org branding, isolation
+    │   │   └── login-form.tsx     # NextAuth credentials login + quick-demo buttons
     │   └── ui/                      # full shadcn/ui component set
     └── lib/
         ├── legacyParser.ts          # SQL dump parser (mirrors scripts/lib)
-        ├── rentData.ts              # server data layer: dump → typed models
+        ├── rentData.ts              # server data layer: dump → typed models + verifyCredentials
+        ├── rbac.ts                  # client-safe role → allowed-views map
+        ├── auth.ts                 # NextAuth options (credentials provider, JWT, session callbacks)
         ├── format.ts                # money + date formatters
         ├── utils.ts                 # cn() helper
         └── db.ts                    # Prisma client (production)

@@ -1,0 +1,28 @@
+# RentPro local Postgres for development & migration testing.
+# Usage:
+#   docker compose up -d        # start postgres
+#   docker compose logs -f      # tail logs
+#   docker compose down        # stop (keeps data volume)
+#   docker compose down -v    # stop + WIPE the database volume
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rentpro-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rentpro
+      POSTGRES_PASSWORD: rentpro
+      POSTGRES_DB: rentpro
+    ports:
+      - "5432:5432"
+    volumes:
+      - rentpro_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rentpro -d rentpro"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  rentpro_pgdata:
