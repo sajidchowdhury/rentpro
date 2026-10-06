@@ -2,7 +2,7 @@
 
 > Modern Rent & Property Management System — a clean, fast replacement for the legacy `osudlagb_home_rent` PHP/MySQL app.
 
-**Status:** Phase 1 prototype — Dashboard (due-expenses card) + Generate Rent + Unified Rent Collection + Recurring Expense Tracker + Vacate & Settlement Wizard + Flexible Property Editor + Tenants directory + **Reports** running on real data.
+**Status:** Phase 1 prototype complete — Dashboard + Generate Rent + Unified Rent Collection + Recurring Expense Tracker + Vacate & Settlement Wizard + Flexible Property Editor + Tenants directory + Reports + **Multi-tenant SaaS core (F9)** running on real data.
 
 ## What is this?
 
@@ -67,7 +67,11 @@ rentpro/
     │       ├── report/yearly/route.ts        # yearly month-by-month
     │       ├── report/account-head/route.ts  # income/expense by account head
     │       ├── report/client-ledger/route.ts  # per-tenant statement
-    │       └── report/client-due/route.ts    # all tenants w/ outstanding
+    │       ├── report/client-due/route.ts    # all tenants w/ outstanding
+    │       ├── organizations/route.ts       # list + create organization (F9)
+    │       ├── organization/route.ts        # active org + ownsData flag (F9)
+    │       ├── organization/update/route.ts # edit org / plan (F9)
+    │       └── organization/activate/route.ts # switch active org (F9)
     ├── components/
     │   ├── rentpro/
     │   │   ├── dashboard.tsx        # KPIs, trend chart, due/vacant/recent lists
@@ -77,7 +81,8 @@ rentpro/
     │   │   ├── vacate.tsx           # 5-step vacate & settlement wizard + printable statement (F5)
     │   │   ├── properties.tsx       # flexible property/unit editor: add rooms/spaces/rooftops anytime (F4)
     │   │   ├── tenants.tsx         # tenants directory: search/filter, leases+advance+outstanding, jump-to-collect
-    │   │   └── reports.tsx         # 5 reports: day book, yearly, account-head-wise, client ledger, client due (printable)
+    │   │   ├── reports.tsx         # 5 reports: day book, yearly, account-head-wise, client ledger, client due (printable)
+    │   │   └── platform.tsx       # SaaS admin: onboard orgs, plans, per-org branding, isolation
     │   └── ui/                      # full shadcn/ui component set
     └── lib/
         ├── legacyParser.ts          # SQL dump parser (mirrors scripts/lib)

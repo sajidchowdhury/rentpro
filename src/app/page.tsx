@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp, Wallet, DoorOpen } from "lucide-react";
+import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp, Wallet, DoorOpen, Globe, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,11 +15,17 @@ import { VacateView } from "@/components/rentpro/vacate";
 import { PropertiesView } from "@/components/rentpro/properties";
 import { TenantsView } from "@/components/rentpro/tenants";
 import { ReportsView } from "@/components/rentpro/reports";
+import { PlatformView } from "@/components/rentpro/platform";
 import { toast } from "sonner";
 
-type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate" | "properties" | "tenants" | "reports";
+type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate" | "properties" | "tenants" | "reports" | "platform";
 
 interface MonthOpt { year: string; month: string }
+
+interface OrgSummary {
+  id: string; name: string; shortName: string | null; plan: "TRIAL" | "ACTIVE" | "EXPIRED";
+  isOwner: boolean; currency: string; defaultLocale: "bn" | "en";
+}
 
 interface DashboardData {
   month: string; year: string; generated: boolean;
@@ -53,6 +59,7 @@ const NAV: { id: View; label: string; labelBn: string; icon: any; active: boolea
   { id: "properties", label: "Properties", labelBn: "ভবন", icon: Building2, active: true },
   { id: "tenants", label: "Tenants", labelBn: "ভাড়াটিয়া", icon: Users, active: true },
   { id: "reports", label: "Reports", labelBn: "রিপোর্ট", icon: BarChart3, active: true },
+  { id: "platform", label: "Platform", labelBn: "প্ল্যাটফর্ম", icon: Globe, active: true },
 ];
 const NAV_DISABLED: { label: string; labelBn: string; icon: any }[] = [];
 
@@ -66,6 +73,9 @@ export default function RentProPage() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [collectTenantId, setCollectTenantId] = useState<number | null>(null);
+  const [activeOrg, setActiveOrg] = useState<OrgSummary | null>(null);
+  const [ownsData, setOwnsData] = useState(true);
+  const [orgs, setOrgs] = useState<OrgSummary[]>([]);
 
   // load available months
   useEffect(() => {
@@ -82,11 +92,45 @@ export default function RentProPage() {
       .catch(() => toast.error("Failed to load months"));
   }, []);
 
+  // F9: load the active org + the org list (for the header switcher)
+  const refreshOrg = useCallback(async () => {
+    try {
+      const [a, l] = await Promise.all([
+        fetch("/api/organization").then((r) => r.json()),
+        fetch("/api/organizations").then((r) => r.json()),
+      ]);
+      setActiveOrg(a.organization ?? null);
+      setOwnsData(a.ownsData ?? true);
+      setOrgs(l.organizations ?? []);
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => { refreshOrg(); }, [refreshOrg]);
+
+  const switchOrg = useCallback(async (id: string) => {
+    try {
+      await fetch("/api/organization/activate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      setDash(null); setGen(null); // force refetch of data views
+      setView("dashboard");
+      await refreshOrg();
+      toast.success("Switched organization");
+    } catch { toast.error("Failed to switch org"); }
+  }, [refreshOrg]);
+
   // fetch view data when month/year/view change
   const refresh = useCallback(async () => {
     if (!month || !year) return;
-    // Collect, Expenses, Vacate & Properties views manage their own data fetching.
-    if (view === "collect" || view === "expenses" || view === "vacate" || view === "properties" || view === "tenants" || view === "reports") {
+    // Collect, Expenses, Vacate, Properties, Tenants, Reports & Platform views
+    // manage their own data fetching.
+    if (view === "collect" || view === "expenses" || view === "vacate" || view === "properties" || view === "tenants" || view === "reports" || view === "platform") {
+      setLoading(false);
+      return;
+    }
+    // Data isolation (F9): if the active org doesn't own the loaded data,
+    // don't fetch dashboard/generate data — the shell shows an empty-org state.
+    if (!ownsData) {
       setLoading(false);
       return;
     }
@@ -106,7 +150,7 @@ export default function RentProPage() {
     } finally {
       setLoading(false);
     }
-  }, [month, year, view]);
+  }, [month, year, view, ownsData]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -136,10 +180,10 @@ export default function RentProPage() {
         {/* Sidebar (md+) */}
         <aside className="hidden md:flex w-60 shrink-0 flex-col border-r bg-background">
           <div className="flex items-center gap-2 px-5 h-16 border-b">
-            <div className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold">R</div>
-            <div>
-              <div className="font-semibold leading-tight">RentPro</div>
-              <div className="text-[10px] text-muted-foreground leading-tight">Property & Rent Mgmt</div>
+            <div className="size-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold">{(activeOrg?.name ?? "RentPro").slice(0, 1)}</div>
+            <div className="min-w-0">
+              <div className="font-semibold leading-tight truncate">{activeOrg?.name ?? "RentPro"}</div>
+              <div className="text-[10px] text-muted-foreground leading-tight">{activeOrg ? (activeOrg.isOwner ? "Owner org" : activeOrg.plan === "TRIAL" ? "Trial client" : "Client") : "Property & Rent Mgmt"}</div>
             </div>
           </div>
           <nav className="flex-1 p-3 space-y-1">
@@ -203,12 +247,31 @@ export default function RentProPage() {
               <div className="flex-1" />
 
               <div className="flex items-center gap-2">
+                {/* F9 org switcher */}
+                {orgs.length > 0 && (
+                  <Select value={activeOrg?.id ?? ""} onValueChange={(v) => switchOrg(v)}>
+                    <SelectTrigger className="w-[170px] h-9 gap-1">
+                      <Globe className="size-3.5 text-muted-foreground" />
+                      <SelectValue placeholder="Organization" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {orgs.map((o) => (
+                        <SelectItem key={o.id} value={o.id}>
+                          <span className="flex items-center gap-2">
+                            {o.isOwner && <ShieldCheck className="size-3 text-emerald-500" />}
+                            {o.name}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
                 <span className="hidden sm:inline text-xs text-muted-foreground">Period</span>
                 <Select value={monthKey({ year, month })} onValueChange={(v) => {
                   const m = months.find((x) => monthKey(x) === v);
                   if (m) { setMonth(m.month); setYear(m.year); }
                 }}>
-                  <SelectTrigger className="w-[180px] h-9">
+                  <SelectTrigger className="w-[160px] h-9">
                     <SelectValue placeholder="Select month" />
                   </SelectTrigger>
                   <SelectContent>
@@ -225,7 +288,34 @@ export default function RentProPage() {
 
           {/* Content */}
           <div className="flex-1 p-4 md:p-6">
-            {loading ? (
+            {/* F9: platform admin view always available (super-admin) */}
+            {view === "platform" ? (
+              <PlatformView onChanged={refreshOrg} onSwitchOrg={switchOrg} />
+            ) : !ownsData && view !== "platform" ? (
+              /* Data isolation — this org has no data loaded */
+              <div className="h-[32rem] grid place-items-center text-center">
+                <div className="max-w-md">
+                  <Globe className="size-12 text-muted-foreground/40 mx-auto mb-3" />
+                  <div className="text-lg font-semibold">{activeOrg?.name ?? "This organization"}</div>
+                  <div className="text-sm text-muted-foreground mt-1">
+                    This client organization has no data yet. Their properties, tenants &amp; collections
+                    are isolated from the owner org — you can&apos;t see the owner&apos;s data here.
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-3">
+                    💡 In production, each org&apos;s data lives in its own Postgres rows (scoped by <code className="px-1 py-0.5 rounded bg-muted">organization_id</code>).
+                    For this prototype, only the owner org has the migrated dump data.
+                  </div>
+                  <div className="flex gap-2 justify-center mt-4">
+                    <Button variant="outline" onClick={() => switchOrg("org_1")}>
+                      <ShieldCheck className="size-4" /> Switch to owner org
+                    </Button>
+                    <Button variant="outline" onClick={() => setView("platform")}>
+                      <Globe className="size-4" /> Manage orgs
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : loading ? (
               <div className="space-y-4">
                 <Skeleton className="h-9 w-64" />
                 <div className="grid gap-4 md:grid-cols-4">

@@ -102,6 +102,25 @@ export interface ExpenseRec {
   isBackfill: boolean;
 }
 
+// F9 — multi-tenant SaaS: each client is an Organization. The owner org
+// (org_1, seeded from setup_company) owns the loaded dump data; other orgs
+// are demo clients with no data (isolated).
+export interface Organization {
+  id: string;
+  name: string;
+  shortName: string | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  logo: string | null;
+  currency: string;
+  defaultLocale: "bn" | "en";
+  plan: "TRIAL" | "ACTIVE" | "EXPIRED";
+  trialEndsAt: string | null;
+  createdAt: string;
+  isOwner: boolean;
+}
+
 // --- global singleton store -------------------------------------------------
 // Next.js dev (Turbopack) can give each API route its own module instance of
 // this file, which would reset module-level state between requests. Backing
@@ -117,6 +136,9 @@ interface RentProStore {
   settlements: SettlementRecord[];
   nextPropertyId: number;
   nextUnitId: number;
+  organizations: Organization[] | null;
+  activeOrgId: string | null;
+  nextOrgId: number;
 }
 function getStore(): RentProStore {
   const g = globalThis as unknown as { __rentproStore__?: RentProStore };
@@ -132,6 +154,9 @@ function getStore(): RentProStore {
       settlements: [],
       nextPropertyId: 1_000_000,
       nextUnitId: 1_000_000,
+      organizations: null,
+      activeOrgId: null,
+      nextOrgId: 2,
     };
   }
   // Migrate: an older code version may have created the store without newer
@@ -147,6 +172,9 @@ function getStore(): RentProStore {
   if (s.tenantAdjustments === undefined) s.tenantAdjustments = new Map();
   if (s.nextCollectionId === undefined) s.nextCollectionId = 1_000_000;
   if (s.nextTxnId === undefined) s.nextTxnId = 1_000_000;
+  if (s.organizations === undefined) s.organizations = null;
+  if (s.activeOrgId === undefined) s.activeOrgId = null;
+  if (s.nextOrgId === undefined) s.nextOrgId = 2;
   return s;
 }
 const S = getStore();
@@ -170,6 +198,14 @@ interface Dataset {
   collections: Collection[];
   txns: Txn[];
   accountHeads: AccountHead[];
+  company: {
+    name: string;
+    shortName: string | null;
+    address: string | null;
+    phone: string | null;
+    email: string | null;
+    logo: string | null;
+  } | null;
 }
 
 
@@ -203,7 +239,7 @@ function loadDataset(): Dataset {
   const path = findDump();
   if (!path) {
     console.warn("[rentData] No legacy dump found — UI will show empty state.");
-    const empty: Dataset = { properties: [], units: [], tenants: [], leases: [], collections: [], txns: [], accountHeads: [] };
+    const empty: Dataset = { properties: [], units: [], tenants: [], leases: [], collections: [], txns: [], accountHeads: [], company: null };
     S.cache = empty;
     return empty;
   }
@@ -314,7 +350,17 @@ function loadDataset(): Dataset {
     })
     .filter((t) => t.id);
 
-  const result: Dataset = { properties, units, tenants, leases, collections, txns, accountHeads };
+  const companyRows = rows("setup_company").map((r) => ({
+    name: str(r.name) || "My Organization",
+    shortName: str(r.short_name) || null,
+    address: str(r.address) || null,
+    phone: str(r.phone) || null,
+    email: str(r.email) || null,
+    logo: str(r.logo) || null,
+  }));
+  const company = companyRows[0] ?? null;
+
+  const result: Dataset = { properties, units, tenants, leases, collections, txns, accountHeads, company };
   S.cache = result;
   console.log(
     `[rentData] Loaded dump: ${properties.length} properties, ${units.length} units, ${tenants.length} tenants, ${leases.length} leases, ${collections.length} collections, ${txns.length} transactions, ${accountHeads.length} account heads.`
@@ -2160,5 +2206,145 @@ export function getClientDueReport(asOfMonth: string, asOfYear: string): ClientD
     totalOutstanding: rows.reduce((s, r) => s + r.outstandingTotal, 0),
     totalTenants: rows.length,
   };
+}
+
+// ============================================================================
+// F9 — MULTI-TENANT SaaS CORE
+// ----------------------------------------------------------------------------
+// Each client is an Organization. The owner org (org_1, seeded from
+// setup_company) owns the loaded dump data; other orgs are demo clients with
+// no data — switching to them shows empty screens (row-level isolation
+// demonstrated). Onboard new clients, edit per-org branding, manage plans.
+// ============================================================================
+
+export const OWNER_ORG_ID = "org_1";
+
+function ensureOrganizations(): Organization[] {
+  if (S.organizations) return S.organizations;
+  const ds = loadDataset();
+  const owner: Organization = {
+    id: OWNER_ORG_ID,
+    name: ds.company?.name ?? "My Organization",
+    shortName: ds.company?.shortName ?? null,
+    address: ds.company?.address ?? null,
+    phone: ds.company?.phone ?? null,
+    email: ds.company?.email ?? null,
+    logo: ds.company?.logo ?? null,
+    currency: "BDT",
+    defaultLocale: "bn",
+    plan: "ACTIVE",
+    trialEndsAt: null,
+    createdAt: new Date().toISOString(),
+    isOwner: true,
+  };
+  // two demo client orgs (no data — demonstrate isolation)
+  const demo1: Organization = {
+    id: "org_demo_1",
+    name: "Sunrise Properties",
+    shortName: "Sunrise",
+    address: "Chattogram",
+    phone: null, email: null, logo: null,
+    currency: "BDT", defaultLocale: "bn",
+    plan: "TRIAL", trialEndsAt: new Date(Date.now() + 12 * 86400000).toISOString().slice(0, 10),
+    createdAt: new Date(Date.now() - 2 * 86400000).toISOString(),
+    isOwner: false,
+  };
+  const demo2: Organization = {
+    id: "org_demo_2",
+    name: "City Markets Ltd",
+    shortName: "CityMarkets",
+    address: "Dhaka",
+    phone: null, email: null, logo: null,
+    currency: "BDT", defaultLocale: "en",
+    plan: "TRIAL", trialEndsAt: new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10),
+    createdAt: new Date(Date.now() - 86400000).toISOString(),
+    isOwner: false,
+  };
+  S.organizations = [owner, demo1, demo2];
+  S.activeOrgId = OWNER_ORG_ID;
+  console.log(`[rentData] Seeded ${S.organizations.length} organizations (owner: ${owner.name}).`);
+  return S.organizations;
+}
+
+export function getOrganizations(): Organization[] {
+  return ensureOrganizations().slice().sort((a, b) => (a.isOwner ? -1 : 0) - (b.isOwner ? -1 : 0) || a.createdAt.localeCompare(b.createdAt));
+}
+
+export function getActiveOrg(): Organization {
+  const all = ensureOrganizations();
+  return all.find((o) => o.id === S.activeOrgId) ?? all[0];
+}
+
+export function setActiveOrg(id: string): { ok: boolean; error?: string } {
+  const all = ensureOrganizations();
+  if (!all.some((o) => o.id === id)) return { ok: false, error: "Organization not found" };
+  S.activeOrgId = id;
+  return { ok: true };
+}
+
+export interface CreateOrgPayload {
+  name: string;
+  shortName?: string;
+  plan?: "TRIAL" | "ACTIVE" | "EXPIRED";
+  currency?: string;
+  defaultLocale?: "bn" | "en";
+}
+export function createOrganization(p: CreateOrgPayload): { ok: boolean; error?: string; id?: string } {
+  ensureOrganizations();
+  if (!p.name?.trim()) return { ok: false, error: "Name is required" };
+  const id = `org_${S.nextOrgId++}`;
+  const plan = p.plan ?? "TRIAL";
+  const org: Organization = {
+    id,
+    name: p.name.trim(),
+    shortName: p.shortName?.trim() || null,
+    address: null, phone: null, email: null, logo: null,
+    currency: p.currency ?? "BDT",
+    defaultLocale: p.defaultLocale ?? "bn",
+    plan,
+    trialEndsAt: plan === "TRIAL" ? new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10) : null,
+    createdAt: new Date().toISOString(),
+    isOwner: false,
+  };
+  S.organizations!.push(org);
+  return { ok: true, id };
+}
+
+export interface UpdateOrgPayload {
+  name?: string;
+  shortName?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  currency?: string;
+  defaultLocale?: "bn" | "en";
+  plan?: "TRIAL" | "ACTIVE" | "EXPIRED";
+}
+export function updateOrganization(id: string, p: UpdateOrgPayload): { ok: boolean; error?: string } {
+  const all = ensureOrganizations();
+  const o = all.find((x) => x.id === id);
+  if (!o) return { ok: false, error: "Organization not found" };
+  if (p.name !== undefined) o.name = p.name.trim() || o.name;
+  if (p.shortName !== undefined) o.shortName = p.shortName.trim() || null;
+  if (p.address !== undefined) o.address = p.address || null;
+  if (p.phone !== undefined) o.phone = p.phone || null;
+  if (p.email !== undefined) o.email = p.email || null;
+  if (p.currency !== undefined) o.currency = p.currency;
+  if (p.defaultLocale !== undefined) o.defaultLocale = p.defaultLocale;
+  if (p.plan !== undefined) {
+    o.plan = p.plan;
+    if (p.plan === "TRIAL" && !o.trialEndsAt) {
+      o.trialEndsAt = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
+    }
+    if (p.plan !== "TRIAL") o.trialEndsAt = null;
+  }
+  return { ok: true };
+}
+
+/** True only for the org that owns the loaded dump data. Other orgs are
+ *  isolated (their data views show an empty state). */
+export function activeOrgOwnsData(): boolean {
+  ensureOrganizations();
+  return S.activeOrgId === OWNER_ORG_ID;
 }
 
