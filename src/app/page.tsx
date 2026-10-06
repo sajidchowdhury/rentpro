@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp, Wallet } from "lucide-react";
+import { LayoutDashboard, Zap, Users, Building2, Receipt, BarChart3, Database, TrendingUp, Wallet, DoorOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,9 +11,10 @@ import { DashboardView } from "@/components/rentpro/dashboard";
 import { GenerateRentView } from "@/components/rentpro/generate-rent";
 import { CollectRentView } from "@/components/rentpro/collect-rent";
 import { ExpensesView } from "@/components/rentpro/expenses";
+import { VacateView } from "@/components/rentpro/vacate";
 import { toast } from "sonner";
 
-type View = "dashboard" | "generate" | "collect" | "expenses";
+type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate";
 
 interface MonthOpt { year: string; month: string }
 
@@ -41,6 +42,7 @@ const NAV: { id: View; label: string; labelBn: string; icon: any; active: boolea
   { id: "generate", label: "Generate Rent", labelBn: "ভাড়া জেনারেট", icon: Zap, active: true },
   { id: "collect", label: "Collect Rent", labelBn: "কালেকশন", icon: Wallet, active: true },
   { id: "expenses", label: "Expenses", labelBn: "খরচ", icon: Receipt, active: true },
+  { id: "vacate", label: "Vacate & Settle", labelBn: "ভাড়া ছাড়", icon: DoorOpen, active: true },
 ];
 const NAV_DISABLED = [
   { label: "Tenants", labelBn: "ভাড়াটিয়া", icon: Users },
@@ -76,8 +78,8 @@ export default function RentProPage() {
   // fetch view data when month/year/view change
   const refresh = useCallback(async () => {
     if (!month || !year) return;
-    // Collect & Expenses views manage their own data fetching.
-    if (view === "collect" || view === "expenses") {
+    // Collect, Expenses & Vacate views manage their own data fetching.
+    if (view === "collect" || view === "expenses" || view === "vacate") {
       setLoading(false);
       return;
     }
@@ -232,6 +234,8 @@ export default function RentProPage() {
               <CollectRentView month={month} year={year} />
             ) : view === "expenses" ? (
               <ExpensesView month={month} year={year} />
+            ) : view === "vacate" ? (
+              <VacateView month={month} year={year} />
             ) : (
               <div className="text-muted-foreground">No data.</div>
             )}

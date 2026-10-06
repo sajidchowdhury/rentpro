@@ -113,6 +113,8 @@ interface RentProStore {
   tenantAdjustments: Map<number, number>;
   nextCollectionId: number;
   nextTxnId: number;
+  nextSettlementId: number;
+  settlements: SettlementRecord[];
 }
 function getStore(): RentProStore {
   const g = globalThis as unknown as { __rentproStore__?: RentProStore };
@@ -124,9 +126,22 @@ function getStore(): RentProStore {
       tenantAdjustments: new Map(),
       nextCollectionId: 1_000_000,
       nextTxnId: 1_000_000,
+      nextSettlementId: 1_000_000,
+      settlements: [],
     };
   }
-  return g.__rentproStore__;
+  // Migrate: an older code version (pre-F5) may have created the store without
+  // the settlements fields. HMR keeps globalThis across reloads, so add any
+  // missing fields here rather than crashing on S.settlements.push().
+  const s = g.__rentproStore__;
+  if (s.settlements === undefined) s.settlements = [];
+  if (s.nextSettlementId === undefined) s.nextSettlementId = 1_000_000;
+  if (s.expenseRecs === undefined) s.expenseRecs = null;
+  if (s.generatedMonths === undefined) s.generatedMonths = new Set();
+  if (s.tenantAdjustments === undefined) s.tenantAdjustments = new Map();
+  if (s.nextCollectionId === undefined) s.nextCollectionId = 1_000_000;
+  if (s.nextTxnId === undefined) s.nextTxnId = 1_000_000;
+  return s;
 }
 const S = getStore();
 
@@ -1248,3 +1263,357 @@ export function getExpenseHeads(): Array<{ id: number; name: string }> {
     .map((a) => ({ id: a.id, name: a.name }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
+
+// ============================================================================
+// F5 — VACATE & SETTLEMENT WIZARD
+// ----------------------------------------------------------------------------
+// getActiveLeases:     leases still ACTIVE, with outstanding + advance summary
+//                      — the picker for "which tenant/room is leaving".
+// getSettlementPreview: computes outstanding rent + utility bills for the
+//                      unpaid months up to the vacate date, the tenant's
+//                      advance balance, and a suggested refund/adjust split.
+// settleLease:         posts the settlement transactions, closes the lease,
+//                      frees the unit (VACANT), and marks the tenant GONE if
+//                      they have no other active leases. Returns a printable
+//                      settlement statement.
+// ============================================================================
+
+export interface SettlementRecord {
+  id: number;
+  leaseId: number;
+  tenantId: number;
+  unitId: number;
+  propertyName: string;
+  unitName: string;
+  tenantName: string;
+  vacateDate: string;
+  outstandingRent: number;
+  outstandingBills: number;
+  advanceBalance: number;
+  advanceAdjusted: number;
+  advanceRefunded: number;
+  netPayableByTenant: number;
+  netRefundByOwner: number;
+  settlementType: "REFUND" | "ADJUST" | "BOTH";
+  tenantMarkedGone: boolean;
+  note: string;
+  settledAt: string;
+}
+
+export interface ActiveLeaseSummary {
+  leaseId: number;
+  tenantId: number;
+  tenantName: string;
+  tenantCode: string;
+  mobile: string | null;
+  unitId: number;
+  unitName: string;
+  propertyName: string;
+  rent: number;
+  advance: number;
+  outstandingMonths: number;
+  outstandingTotal: number;
+  advanceBalance: number;
+  agreementStart: string | null;
+}
+
+/** Leases that are still ACTIVE — candidates for vacate. */
+export function getActiveLeases(asOfMonth: string, asOfYear: string): ActiveLeaseSummary[] {
+  const ds = loadDataset();
+  const asOfKey = keyFromYM(asOfYear, asOfMonth);
+  const out: ActiveLeaseSummary[] = [];
+  for (const l of ds.leases) {
+    if (l.status !== "ACTIVE") continue;
+    const startK = dateKey(l.agreementStart);
+    const fromK = startK === null ? asOfKey : Math.max(startK, asOfKey - 23);
+    let outstandingMonths = 0;
+    let outstandingTotal = 0;
+    for (let k = fromK; k <= asOfKey; k++) {
+      const y = Math.floor(k / 12);
+      const m = MONTHS[k % 12];
+      const collected = ds.collections
+        .filter(
+          (c) =>
+            c.leaseId === l.id &&
+            c.rentMonth === m &&
+            c.rentYear === String(y) &&
+            c.status === "DONE"
+        )
+        .reduce((s, c) => s + c.rent, 0);
+      const total = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+      if (collected < total) {
+        outstandingMonths++;
+        outstandingTotal += total - collected;
+      }
+    }
+    const tenant = ds.tenants.find((t) => t.id === l.tenantId);
+    out.push({
+      leaseId: l.id,
+      tenantId: l.tenantId,
+      tenantName: l.tenantName,
+      tenantCode: tenant?.code ?? String(l.tenantId),
+      mobile: tenant?.mobile ?? null,
+      unitId: l.unitId,
+      unitName: l.unitName,
+      propertyName: l.propertyName,
+      rent: l.rent,
+      advance: l.advance,
+      outstandingMonths,
+      outstandingTotal,
+      advanceBalance: tenantAdvanceBalance(l.tenantId, ds),
+      agreementStart: l.agreementStart ? l.agreementStart.toISOString().slice(0, 10) : null,
+    });
+  }
+  return out.sort((a, b) => b.outstandingTotal - a.outstandingTotal);
+}
+
+export interface OutstandingMonth {
+  month: string;
+  year: string;
+  rent: number;
+  bills: number;
+  total: number;
+}
+export interface SettlementPreview {
+  lease: {
+    id: number;
+    tenantId: number;
+    tenantName: string;
+    tenantCode: string;
+    mobile: string | null;
+    unitId: number;
+    unitName: string;
+    propertyName: string;
+    rent: number;
+    gasBill: number;
+    serviceCharge: number;
+    otherBill: number;
+    agreementStart: string | null;
+    advancePayment: number;
+  };
+  vacateDate: string;
+  outstandingMonths: OutstandingMonth[];
+  outstandingRentTotal: number;
+  outstandingBillsTotal: number;
+  outstandingTotal: number;
+  advanceBalance: number;
+  suggestedType: "REFUND" | "ADJUST" | "BOTH";
+  suggestedAdjust: number;
+  suggestedRefund: number;
+  suggestedNetPayable: number;
+  suggestedNetRefund: number;
+}
+
+export function getSettlementPreview(
+  leaseId: number,
+  vacateDate: string
+): SettlementPreview | { error: string } {
+  const ds = loadDataset();
+  const lease = ds.leases.find((l) => l.id === leaseId);
+  if (!lease) return { error: "Lease not found" };
+  if (lease.status !== "ACTIVE") return { error: "Lease is not active (already settled)" };
+
+  const vacate = vacateDate ? new Date(vacateDate) : new Date();
+  const vacateKey = vacate.getFullYear() * 12 + vacate.getMonth();
+  const startK = dateKey(lease.agreementStart);
+  const fromK = startK === null ? vacateKey : Math.max(startK, vacateKey - 23);
+
+  const outstandingMonths: OutstandingMonth[] = [];
+  for (let k = fromK; k <= vacateKey; k++) {
+    const y = Math.floor(k / 12);
+    const m = MONTHS[k % 12];
+    const collected = ds.collections
+      .filter(
+        (c) =>
+          c.leaseId === lease.id &&
+          c.rentMonth === m &&
+          c.rentYear === String(y) &&
+          c.status === "DONE"
+      )
+      .reduce((s, c) => s + c.rent, 0);
+    const rent = lease.rent;
+    const bills = lease.gasBill + lease.serviceCharge + lease.otherBill;
+    const total = rent + bills;
+    if (collected < total) {
+      outstandingMonths.push({
+        month: m,
+        year: String(y),
+        rent,
+        bills,
+        total: total - collected,
+      });
+    }
+  }
+
+  const outstandingRentTotal = outstandingMonths.reduce((s, r) => s + r.rent, 0);
+  const outstandingBillsTotal = outstandingMonths.reduce((s, r) => s + r.bills, 0);
+  const outstandingTotal = outstandingRentTotal + outstandingBillsTotal;
+  const advanceBalance = tenantAdvanceBalance(lease.tenantId, ds);
+
+  // suggested split
+  const suggestedAdjust = Math.min(advanceBalance, outstandingTotal);
+  const suggestedRefund = Math.max(0, advanceBalance - outstandingTotal);
+  const suggestedNetPayable = Math.max(0, outstandingTotal - advanceBalance);
+  const suggestedNetRefund = suggestedRefund;
+  let suggestedType: "REFUND" | "ADJUST" | "BOTH" = "REFUND";
+  if (suggestedAdjust > 0 && suggestedRefund > 0) suggestedType = "BOTH";
+  else if (suggestedAdjust > 0) suggestedType = "ADJUST";
+
+  const tenant = ds.tenants.find((t) => t.id === lease.tenantId);
+  return {
+    lease: {
+      id: lease.id,
+      tenantId: lease.tenantId,
+      tenantName: lease.tenantName,
+      tenantCode: tenant?.code ?? String(lease.tenantId),
+      mobile: tenant?.mobile ?? null,
+      unitId: lease.unitId,
+      unitName: lease.unitName,
+      propertyName: lease.propertyName,
+      rent: lease.rent,
+      gasBill: lease.gasBill,
+      serviceCharge: lease.serviceCharge,
+      otherBill: lease.otherBill,
+      agreementStart: lease.agreementStart ? lease.agreementStart.toISOString().slice(0, 10) : null,
+      advancePayment: lease.advance,
+    },
+    vacateDate: vacate.toISOString().slice(0, 10),
+    outstandingMonths,
+    outstandingRentTotal,
+    outstandingBillsTotal,
+    outstandingTotal,
+    advanceBalance,
+    suggestedType,
+    suggestedAdjust,
+    suggestedRefund,
+    suggestedNetPayable,
+    suggestedNetRefund,
+  };
+}
+
+export interface SettlePayload {
+  leaseId: number;
+  vacateDate: string;
+  advanceAdjusted: number;
+  advanceRefunded: number;
+  note: string;
+}
+
+export function settleLease(
+  p: SettlePayload
+): { ok: boolean; error?: string; settlement?: SettlementRecord } {
+  const ds = loadDataset();
+  const lease = ds.leases.find((l) => l.id === p.leaseId);
+  if (!lease) return { ok: false, error: "Lease not found" };
+  if (lease.status !== "ACTIVE") return { ok: false, error: "Lease already settled" };
+
+  // recompute outstanding + advance for the record (source of truth)
+  const preview = getSettlementPreview(p.leaseId, p.vacateDate);
+  if ("error" in preview) return { ok: false, error: preview.error };
+  const outstandingTotal = preview.outstandingTotal;
+  const advanceBalance = preview.advanceBalance;
+
+  const advanceAdjusted = Math.min(Number(p.advanceAdjusted), advanceBalance, outstandingTotal);
+  const advanceRefunded = Math.min(
+    Number(p.advanceRefunded),
+    advanceBalance - advanceAdjusted
+  );
+  const netPayableByTenant = Math.max(0, outstandingTotal - advanceAdjusted);
+  const netRefundByOwner = advanceRefunded;
+  let settlementType: "REFUND" | "ADJUST" | "BOTH" = "REFUND";
+  if (advanceAdjusted > 0 && advanceRefunded > 0) settlementType = "BOTH";
+  else if (advanceAdjusted > 0) settlementType = "ADJUST";
+
+  const vacate = p.vacateDate ? new Date(p.vacateDate) : new Date();
+  const tenant = ds.tenants.find((t) => t.id === lease.tenantId);
+  const unit = ds.units.find((u) => u.id === lease.unitId);
+
+  // --- post transactions ---
+  // 1) advance adjusted against due (internal; no cash moves)
+  if (advanceAdjusted > 0) {
+    S.tenantAdjustments.set(
+      lease.tenantId,
+      (S.tenantAdjustments.get(lease.tenantId) ?? 0) + advanceAdjusted
+    );
+    ds.txns.push({
+      id: S.nextTxnId++,
+      inAmount: 0,
+      outAmount: 0,
+      transectionDate: vacate,
+      note: `Advance adjusted against due — ${lease.tenantName} — vacate settlement`,
+      type: "ADJUSTMENT",
+      accountHeadId: null,
+      accountHeadName: "ADVANCE ADJUSTMENT",
+    });
+  }
+  // 2) advance refunded to tenant (cash out)
+  if (advanceRefunded > 0) {
+    S.tenantAdjustments.set(
+      lease.tenantId,
+      (S.tenantAdjustments.get(lease.tenantId) ?? 0) + advanceRefunded
+    );
+    ds.txns.push({
+      id: S.nextTxnId++,
+      inAmount: 0,
+      outAmount: advanceRefunded,
+      transectionDate: vacate,
+      note: `Advance refunded to tenant — ${lease.tenantName} — vacate settlement`,
+      type: "EXPENSE",
+      accountHeadId: null,
+      accountHeadName: "CLIENT ADVANCE",
+    });
+  }
+  // 3) tenant pays the remaining outstanding (cash in)
+  if (netPayableByTenant > 0) {
+    ds.txns.push({
+      id: S.nextTxnId++,
+      inAmount: netPayableByTenant,
+      outAmount: 0,
+      transectionDate: vacate,
+      note: `Final settlement payment — ${lease.tenantName} — ${lease.unitName}`,
+      type: "INCOME",
+      accountHeadId: null,
+      accountHeadName: "RENT COLLECTION",
+    });
+  }
+
+  // --- mutate state: close lease, free unit, mark tenant gone if last lease ---
+  lease.status = "CLOSED";
+  lease.vacatedAt = vacate;
+  if (lease.agreementEnd === null || lease.agreementEnd < vacate) {
+    lease.agreementEnd = vacate;
+  }
+  if (unit) unit.status = "VACANT";
+  const hasOtherActiveLease = ds.leases.some(
+    (l) => l.tenantId === lease.tenantId && l.id !== lease.id && l.status === "ACTIVE"
+  );
+  const tenantMarkedGone = !hasOtherActiveLease;
+  if (tenant && tenantMarkedGone) tenant.status = "GONE";
+
+  // --- record the settlement ---
+  const record: SettlementRecord = {
+    id: S.nextSettlementId++,
+    leaseId: lease.id,
+    tenantId: lease.tenantId,
+    unitId: lease.unitId,
+    propertyName: lease.propertyName,
+    unitName: lease.unitName,
+    tenantName: lease.tenantName,
+    vacateDate: vacate.toISOString().slice(0, 10),
+    outstandingRent: preview.outstandingRentTotal,
+    outstandingBills: preview.outstandingBillsTotal,
+    advanceBalance,
+    advanceAdjusted,
+    advanceRefunded,
+    netPayableByTenant,
+    netRefundByOwner,
+    settlementType,
+    tenantMarkedGone,
+    note: p.note,
+    settledAt: new Date().toISOString(),
+  };
+  S.settlements.push(record);
+
+  return { ok: true, settlement: record };
+}
+

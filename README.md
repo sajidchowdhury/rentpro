@@ -2,7 +2,7 @@
 
 > Modern Rent & Property Management System — a clean, fast replacement for the legacy `osudlagb_home_rent` PHP/MySQL app.
 
-**Status:** Phase 1 prototype — Dashboard + Generate Rent + Unified Rent Collection (F2) + **Recurring Expense Tracker (F3)** running on real data.
+**Status:** Phase 1 prototype — Dashboard + Generate Rent + Unified Rent Collection (F2) + Recurring Expense Tracker (F3) + **Vacate & Settlement Wizard (F5)** running on real data.
 
 ## What is this?
 
@@ -51,13 +51,17 @@ rentpro/
     │       ├── expenses/route.ts   # recurring expense tracker for a month (F3)
     │       ├── expense-heads/route.ts # expense account heads (F3)
     │       ├── record-expense/route.ts # record one expense (F3)
-    │       └── record-expense-batch/route.ts # back-fill all missing months (F3)
+    │       ├── record-expense-batch/route.ts # back-fill all missing months (F3)
+    │       ├── active-leases/route.ts     # active leases with outstanding + advance (F5)
+    │       ├── settlement-preview/route.ts # outstanding + suggested refund/adjust split (F5)
+    │       └── settle-lease/route.ts     # settle a lease (close, vacate, refund/adjust) (F5)
     ├── components/
     │   ├── rentpro/
     │   │   ├── dashboard.tsx        # KPIs, trend chart, due/vacant/recent lists
     │   │   ├── generate-rent.tsx    # monthly rent auto-generation screen
     │   │   ├── collect-rent.tsx     # unified collection: picker, due list, collect dialog, receipt+QR (F2)
-    │   │   └── expenses.tsx         # recurring expense tracker: due/missing, back-fill, predictions (F3)
+    │   │   ├── expenses.tsx         # recurring expense tracker: due/missing, back-fill, predictions (F3)
+    │   │   └── vacate.tsx           # 5-step vacate & settlement wizard + printable statement (F5)
     │   └── ui/                      # full shadcn/ui component set
     └── lib/
         ├── legacyParser.ts          # SQL dump parser (mirrors scripts/lib)
