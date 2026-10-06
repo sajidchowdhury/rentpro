@@ -10,9 +10,10 @@ import { cn } from "@/lib/utils";
 import { DashboardView } from "@/components/rentpro/dashboard";
 import { GenerateRentView } from "@/components/rentpro/generate-rent";
 import { CollectRentView } from "@/components/rentpro/collect-rent";
+import { ExpensesView } from "@/components/rentpro/expenses";
 import { toast } from "sonner";
 
-type View = "dashboard" | "generate" | "collect";
+type View = "dashboard" | "generate" | "collect" | "expenses";
 
 interface MonthOpt { year: string; month: string }
 
@@ -39,11 +40,11 @@ const NAV: { id: View; label: string; labelBn: string; icon: any; active: boolea
   { id: "dashboard", label: "Dashboard", labelBn: "ড্যাশবোর্ড", icon: LayoutDashboard, active: true },
   { id: "generate", label: "Generate Rent", labelBn: "ভাড়া জেনারেট", icon: Zap, active: true },
   { id: "collect", label: "Collect Rent", labelBn: "কালেকশন", icon: Wallet, active: true },
+  { id: "expenses", label: "Expenses", labelBn: "খরচ", icon: Receipt, active: true },
 ];
 const NAV_DISABLED = [
   { label: "Tenants", labelBn: "ভাড়াটিয়া", icon: Users },
   { label: "Properties", labelBn: "ভবন", icon: Building2 },
-  { label: "Expenses", labelBn: "খরচ", icon: Receipt },
   { label: "Reports", labelBn: "রিপোর্ট", icon: BarChart3 },
 ];
 
@@ -75,8 +76,8 @@ export default function RentProPage() {
   // fetch view data when month/year/view change
   const refresh = useCallback(async () => {
     if (!month || !year) return;
-    // Collect view manages its own data fetching (tenant picker + ledger).
-    if (view === "collect") {
+    // Collect & Expenses views manage their own data fetching.
+    if (view === "collect" || view === "expenses") {
       setLoading(false);
       return;
     }
@@ -229,6 +230,8 @@ export default function RentProPage() {
               <GenerateRentView data={gen} onGenerate={onGenerate} generating={generating} />
             ) : view === "collect" ? (
               <CollectRentView month={month} year={year} />
+            ) : view === "expenses" ? (
+              <ExpensesView month={month} year={year} />
             ) : (
               <div className="text-muted-foreground">No data.</div>
             )}

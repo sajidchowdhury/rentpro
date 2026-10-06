@@ -2,7 +2,7 @@
 
 > Modern Rent & Property Management System — a clean, fast replacement for the legacy `osudlagb_home_rent` PHP/MySQL app.
 
-**Status:** Phase 1 prototype — Dashboard + Generate Rent + **Unified Rent Collection (F2)** running on real data.
+**Status:** Phase 1 prototype — Dashboard + Generate Rent + Unified Rent Collection (F2) + **Recurring Expense Tracker (F3)** running on real data.
 
 ## What is this?
 
@@ -47,12 +47,17 @@ rentpro/
     │       ├── generate-rent/route.ts # rent-generation preview + POST action
     │       ├── tenants/route.ts    # tenant list with outstanding summary (F2)
     │       ├── tenant-ledger/route.ts # one tenant's due months + advance (F2)
-    │       └── collect/route.ts     # record a collection + return receipt (F2)
+    │       ├── collect/route.ts     # record a collection + return receipt (F2)
+    │       ├── expenses/route.ts   # recurring expense tracker for a month (F3)
+    │       ├── expense-heads/route.ts # expense account heads (F3)
+    │       ├── record-expense/route.ts # record one expense (F3)
+    │       └── record-expense-batch/route.ts # back-fill all missing months (F3)
     ├── components/
     │   ├── rentpro/
     │   │   ├── dashboard.tsx        # KPIs, trend chart, due/vacant/recent lists
     │   │   ├── generate-rent.tsx    # monthly rent auto-generation screen
-    │   │   └── collect-rent.tsx     # unified collection: picker, due list, collect dialog, receipt+QR (F2)
+    │   │   ├── collect-rent.tsx     # unified collection: picker, due list, collect dialog, receipt+QR (F2)
+    │   │   └── expenses.tsx         # recurring expense tracker: due/missing, back-fill, predictions (F3)
     │   └── ui/                      # full shadcn/ui component set
     └── lib/
         ├── legacyParser.ts          # SQL dump parser (mirrors scripts/lib)

@@ -81,13 +81,56 @@ export interface Txn {
   outAmount: number;
   transectionDate: Date | null;
   note: string | null;
-  type: string;
+  type: "INCOME" | "EXPENSE" | "TRANSFER" | "ADJUSTMENT";
+  accountHeadId: number | null;
+  accountHeadName: string;
 }
 
-// --- in-memory "generated schedules" store (prototype only) ---------------
-// In production these are real rent_schedule rows in Postgres. Here we just
-// remember which (month, year) the user has "generated" so the UI reflects it.
-const generatedMonths = new Set<string>(); // key: "YYYY|MonthName"
+export interface AccountHead {
+  id: number;
+  name: string;
+  type: "INCOME" | "EXPENSE" | "BOTH" | "ASSET" | "LIABILITY";
+}
+
+export interface ExpenseRec {
+  headId: number;
+  headName: string;
+  month: string;
+  year: string;
+  amount: number;
+  recordedDate: Date;
+  isBackfill: boolean;
+}
+
+// --- global singleton store -------------------------------------------------
+// Next.js dev (Turbopack) can give each API route its own module instance of
+// this file, which would reset module-level state between requests. Backing
+// the state on `globalThis` guarantees every route shares the same dataset.
+interface RentProStore {
+  cache: Dataset | null;
+  expenseRecs: ExpenseRec[] | null;
+  generatedMonths: Set<string>;
+  tenantAdjustments: Map<number, number>;
+  nextCollectionId: number;
+  nextTxnId: number;
+}
+function getStore(): RentProStore {
+  const g = globalThis as unknown as { __rentproStore__?: RentProStore };
+  if (!g.__rentproStore__) {
+    g.__rentproStore__ = {
+      cache: null,
+      expenseRecs: null,
+      generatedMonths: new Set(),
+      tenantAdjustments: new Map(),
+      nextCollectionId: 1_000_000,
+      nextTxnId: 1_000_000,
+    };
+  }
+  return g.__rentproStore__;
+}
+const S = getStore();
+
+// (generatedMonths lives on the global store S above so it survives HMR.)
 
 // --- dump loader (cached) --------------------------------------------------
 const DUMP_CANDIDATES = [
@@ -105,9 +148,9 @@ interface Dataset {
   leases: Lease[];
   collections: Collection[];
   txns: Txn[];
+  accountHeads: AccountHead[];
 }
 
-let cache: Dataset | null = null;
 
 function findDump(): string | null {
   for (const c of DUMP_CANDIDATES) {
@@ -134,13 +177,14 @@ function dt(v: Cell): Date | null {
 }
 
 function loadDataset(): Dataset {
-  if (cache) return cache;
+  if (S.cache) return S.cache;
 
   const path = findDump();
   if (!path) {
     console.warn("[rentData] No legacy dump found — UI will show empty state.");
-    cache = { properties: [], units: [], tenants: [], leases: [], collections: [], txns: [] };
-    return cache;
+    const empty: Dataset = { properties: [], units: [], tenants: [], leases: [], collections: [], txns: [], accountHeads: [] };
+    S.cache = empty;
+    return empty;
   }
 
   const sql = readFileSync(path, "utf-8");
@@ -220,22 +264,41 @@ function loadDataset(): Dataset {
     }))
     .filter((c) => c.id && c.rentMonth && c.rentYear);
 
-  const txns: Txn[] = rows("account_transection")
+  const accountHeads: AccountHead[] = rows("setup_ac_head")
     .map((r) => ({
       id: num(r.id),
-      inAmount: num(r.in_amount),
-      outAmount: num(r.out_amount),
-      transectionDate: dt(r.transection_date),
-      note: str(r.note) || null,
-      type: str(r.transection_type) || "INCOME",
+      name: str(r.account_head) || `Head ${r.id}`,
+      type: (str(r.account_type) || "EXPENSE").toUpperCase() as AccountHead["type"],
     }))
+    .filter((a) => a.id);
+  const headMap = new Map(accountHeads.map((a) => [a.id, a]));
+  const headName = (id: number | null) =>
+    id ? headMap.get(id)?.name ?? "" : "";
+  const headType = (id: number | null) =>
+    id ? headMap.get(id)?.type ?? "EXPENSE" : "EXPENSE";
+
+  const txns: Txn[] = rows("account_transection")
+    .map((r) => {
+      const ahId = r.transection_head_id === null || r.transection_head_id === "" ? null : num(r.transection_head_id);
+      return {
+        id: num(r.id),
+        inAmount: num(r.in_amount),
+        outAmount: num(r.out_amount),
+        transectionDate: dt(r.transection_date),
+        note: str(r.note) || null,
+        accountHeadId: ahId,
+        accountHeadName: headName(ahId),
+        type: headType(ahId),
+      } as Txn;
+    })
     .filter((t) => t.id);
 
-  cache = { properties, units, tenants, leases, collections, txns };
+  const result: Dataset = { properties, units, tenants, leases, collections, txns, accountHeads };
+  S.cache = result;
   console.log(
-    `[rentData] Loaded dump: ${properties.length} properties, ${units.length} units, ${tenants.length} tenants, ${leases.length} leases, ${collections.length} collections, ${txns.length} transactions.`
+    `[rentData] Loaded dump: ${properties.length} properties, ${units.length} units, ${tenants.length} tenants, ${leases.length} leases, ${collections.length} collections, ${txns.length} transactions, ${accountHeads.length} account heads.`
   );
-  return cache;
+  return result;
 }
 
 // --- month helpers ---------------------------------------------------------
@@ -347,7 +410,7 @@ function unitForLease(leaseId: number, ds: Dataset) {
 export function getDashboard(month: string, year: string): DashboardData {
   const ds = loadDataset();
   const targetKey = keyFromYM(year, month);
-  const generated = generatedMonths.has(`${year}|${month}`);
+  const generated = S.generatedMonths.has(`${year}|${month}`);
 
   // leases covering this month
   const leasesForMonth = ds.leases.filter((l) =>
@@ -530,7 +593,7 @@ export function getGeneratePreview(
 ): GeneratePreview {
   const ds = loadDataset();
   const targetKey = keyFromYM(year, month);
-  const generated = generatedMonths.has(`${year}|${month}`);
+  const generated = S.generatedMonths.has(`${year}|${month}`);
 
   const leasesForMonth = ds.leases.filter((l) =>
     leaseCoversMonth(l, targetKey)
@@ -583,7 +646,7 @@ export function getGeneratePreview(
 
 /** Prototype "generate" — marks the month as generated in memory. */
 export function markMonthGenerated(month: string, year: string): void {
-  generatedMonths.add(`${year}|${month}`);
+  S.generatedMonths.add(`${year}|${month}`);
 }
 
 // ============================================================================
@@ -595,18 +658,13 @@ export function markMonthGenerated(month: string, year: string): void {
 //                  + create ledger transaction + return a printable receipt.
 // ============================================================================
 
-// In-memory prototype state for new collections/transactions. IDs start at
-// 1,000,000 so they never collide with legacy ids (max ~1,560 / ~1,880).
-let nextCollectionId = 1_000_000;
-let nextTxnId = 1_000_000;
-// tenantId -> total advance adjusted so far (prototype tracking)
-const tenantAdjustments = new Map<number, number>();
+// (nextCollectionId, nextTxnId, tenantAdjustments live on the global store S.)
 
 function tenantAdvanceBalance(tenantId: number, ds: Dataset): number {
   const initial = ds.leases
     .filter((l) => l.tenantId === tenantId)
     .reduce((s, l) => s + l.advance, 0);
-  const adjusted = tenantAdjustments.get(tenantId) ?? 0;
+  const adjusted = S.tenantAdjustments.get(tenantId) ?? 0;
   return Math.max(0, initial - adjusted);
 }
 
@@ -868,7 +926,7 @@ export function collectRent(p: CollectPayload): {
   if (total <= 0) return { ok: false, error: "Amount must be greater than zero" };
 
   const receive = p.receiveDate ? new Date(p.receiveDate) : new Date();
-  const id = nextCollectionId++;
+  const id = S.nextCollectionId++;
 
   // record the collection
   ds.collections.push({
@@ -892,9 +950,9 @@ export function collectRent(p: CollectPayload): {
     const avail = tenantAdvanceBalance(tenant.id, ds);
     advanceAdjusted = Math.min(Number(p.advanceAdjust), avail, total);
     if (advanceAdjusted > 0) {
-      tenantAdjustments.set(
+      S.tenantAdjustments.set(
         tenant.id,
-        (tenantAdjustments.get(tenant.id) ?? 0) + advanceAdjusted
+        (S.tenantAdjustments.get(tenant.id) ?? 0) + advanceAdjusted
       );
     }
   }
@@ -904,7 +962,7 @@ export function collectRent(p: CollectPayload): {
     const cashIn = Math.max(0, total - advanceAdjusted);
     if (cashIn > 0) {
       ds.txns.push({
-        id: nextTxnId++,
+        id: S.nextTxnId++,
         inAmount: cashIn,
         outAmount: 0,
         transectionDate: receive,
@@ -950,3 +1008,243 @@ export function collectRent(p: CollectPayload): {
   return { ok: true, receipt };
 }
 
+// ============================================================================
+// F3 — RECURRING EXPENSE TRACKER (electricity / gas / service)
+// ----------------------------------------------------------------------------
+// Tracks recurring monthly expenses, flags months that were never recorded
+// (so you never silently miss an electricity bill), supports back-fill
+// (record January's bill in February), and predicts amounts from history.
+//
+// Prototype source of truth: an in-memory `expenseRecs` array seeded from the
+// legacy EXPENSE transactions (each expense txn -> a record for its month).
+// New recordings append here AND post a transaction (so the dashboard cash
+// flow stays in sync). In production these are `expense_record` rows in
+// Postgres, each linked to a `transaction` via `transactionId`.
+// ============================================================================
+
+// (ExpenseRec interface is defined near the top; expenseRecs lives on S.)
+
+function ensureExpenseRecs(): ExpenseRec[] {
+  if (S.expenseRecs) return S.expenseRecs;
+  const ds = loadDataset();
+  const map = new Map<string, ExpenseRec>();
+  for (const t of ds.txns) {
+    if (t.type !== "EXPENSE" || t.outAmount <= 0 || !t.transectionDate || !t.accountHeadId) continue;
+    const y = String(t.transectionDate.getFullYear());
+    const m = MONTHS[t.transectionDate.getMonth()];
+    const key = `${t.accountHeadId}|${m}|${y}`;
+    const ex = map.get(key);
+    if (ex) {
+      ex.amount += t.outAmount;
+      if (t.transectionDate > ex.recordedDate) ex.recordedDate = t.transectionDate;
+    } else {
+      map.set(key, {
+        headId: t.accountHeadId,
+        headName: t.accountHeadName,
+        month: m,
+        year: y,
+        amount: t.outAmount,
+        recordedDate: t.transectionDate,
+        isBackfill: false,
+      });
+    }
+  }
+  const seeded: ExpenseRec[] = [...map.values()];
+  S.expenseRecs = seeded;
+  console.log(`[rentData] Seeded ${seeded.length} expense records from legacy transactions.`);
+  return seeded;
+}
+
+export interface ExpenseRecordSummary {
+  month: string;
+  year: string;
+  amount: number;
+}
+export interface ExpenseTypeStatus {
+  headId: number;
+  name: string;
+  recurring: boolean;
+  recordCount: number;
+  recordedInAsOf: boolean;
+  asOfAmount: number;
+  predictedAmount: number;
+  lastRecorded: ExpenseRecordSummary | null;
+  missingMonths: { month: string; year: string }[];
+  recent: ExpenseRecordSummary[];
+  backfilledCount: number;
+}
+export interface ExpenseTracker {
+  month: string;
+  year: string;
+  types: ExpenseTypeStatus[];
+  recordedCount: number;
+  recordedTotal: number;
+  dueCount: number;
+  dueTotal: number;
+  backfillCount: number;
+}
+
+export function getExpenseTracker(month: string, year: string): ExpenseTracker {
+  const ds = loadDataset();
+  const recs = ensureExpenseRecs();
+  const asOfKey = keyFromYM(year, month);
+
+  // aggregate by (headId, month, year)
+  const agg = new Map<string, ExpenseRec>();
+  for (const r of recs) {
+    const key = `${r.headId}|${r.month}|${r.year}`;
+    const ex = agg.get(key);
+    if (ex) {
+      ex.amount += r.amount;
+      if (r.recordedDate > ex.recordedDate) ex.recordedDate = r.recordedDate;
+      ex.isBackfill = ex.isBackfill || r.isBackfill;
+    } else {
+      agg.set(key, { ...r });
+    }
+  }
+
+  const headsWithRecs = new Set([...agg.values()].map((r) => r.headId));
+  const types: ExpenseTypeStatus[] = [];
+
+  for (const hid of headsWithRecs) {
+    const headRecs = [...agg.values()].filter((r) => r.headId === hid);
+    const sorted = headRecs.sort(
+      (a, b) => keyFromYM(a.year, a.month) - keyFromYM(b.year, b.month)
+    );
+    const distinct = new Set(sorted.map((r) => `${r.year}|${r.month}`)).size;
+    const recurring = distinct >= 2;
+    const asOfRec = sorted.find((r) => r.month === month && r.year === year);
+    const last3 = sorted.slice(-3);
+    const predicted = last3.length
+      ? last3.reduce((s, r) => s + r.amount, 0) / last3.length
+      : 0;
+    const lastRec = sorted[sorted.length - 1] ?? null;
+    const firstRec = sorted[0] ?? null;
+    // Missing months: scan EVERY month from firstRecorded (capped 24 months
+    // back from asOf) to asOf, flagging any month with no record. This catches
+    // gaps BEFORE the last recorded month too (e.g. paid Jan+Mar, missed Feb).
+    const missingMonths: { month: string; year: string }[] = [];
+    if (recurring && firstRec) {
+      const firstK = keyFromYM(firstRec.year, firstRec.month);
+      const fromK = Math.max(firstK, asOfKey - 23);
+      for (let k = fromK; k <= asOfKey; k++) {
+        const y = String(Math.floor(k / 12));
+        const m = MONTHS[k % 12];
+        if (!sorted.some((r) => r.month === m && r.year === y)) {
+          missingMonths.push({ month: m, year: y });
+        }
+      }
+    }
+    types.push({
+      headId: hid,
+      name: ds.accountHeads.find((a) => a.id === hid)?.name ?? "",
+      recurring,
+      recordCount: distinct,
+      recordedInAsOf: !!asOfRec,
+      asOfAmount: asOfRec?.amount ?? 0,
+      predictedAmount: Math.round(predicted),
+      lastRecorded: lastRec
+        ? { month: lastRec.month, year: lastRec.year, amount: lastRec.amount }
+        : null,
+      missingMonths,
+      recent: sorted
+        .slice(-6)
+        .reverse()
+        .map((r) => ({ month: r.month, year: r.year, amount: r.amount })),
+      backfilledCount: sorted.filter((r) => r.isBackfill).length,
+    });
+  }
+
+  // due (recurring & not recorded this month) first, then by missing count
+  types.sort((a, b) => {
+    const aDue = a.recurring && !a.recordedInAsOf ? 1 : 0;
+    const bDue = b.recurring && !b.recordedInAsOf ? 1 : 0;
+    if (aDue !== bDue) return bDue - aDue;
+    return b.missingMonths.length - a.missingMonths.length;
+  });
+
+  const recordedTypes = types.filter((t) => t.recordedInAsOf);
+  const dueTypes = types.filter((t) => t.recurring && !t.recordedInAsOf);
+
+  return {
+    month,
+    year,
+    types,
+    recordedCount: recordedTypes.length,
+    recordedTotal: recordedTypes.reduce((s, t) => s + t.asOfAmount, 0),
+    dueCount: dueTypes.length,
+    dueTotal: dueTypes.reduce((s, t) => s + t.predictedAmount, 0),
+    backfillCount: types.reduce((s, t) => s + t.missingMonths.length, 0),
+  };
+}
+
+export interface RecordExpensePayload {
+  accountHeadId: number;
+  month: string;
+  year: string;
+  amount: number;
+  date: string; // ISO recorded date
+  note: string;
+}
+
+export function recordExpense(
+  p: RecordExpensePayload
+): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const recs = ensureExpenseRecs();
+  const head = ds.accountHeads.find((a) => a.id === p.accountHeadId);
+  if (!head) return { ok: false, error: "Expense head not found" };
+  if (p.amount <= 0) return { ok: false, error: "Amount must be greater than zero" };
+
+  const date = p.date ? new Date(p.date) : new Date();
+  const forKey = keyFromYM(p.year, p.month);
+  const recKey = date.getFullYear() * 12 + date.getMonth();
+  const isBackfill = recKey !== forKey;
+
+  // 1) expense record (for-month attribution — what the tracker reads)
+  recs.push({
+    headId: head.id,
+    headName: head.name,
+    month: p.month,
+    year: p.year,
+    amount: Number(p.amount),
+    recordedDate: date,
+    isBackfill,
+  });
+
+  // 2) ledger transaction (cash-out, for dashboard cash flow sync)
+  ds.txns.push({
+    id: S.nextTxnId++,
+    inAmount: 0,
+    outAmount: Number(p.amount),
+    transectionDate: date,
+    note: p.note || `${head.name} — ${p.month} ${p.year}`,
+    type: "EXPENSE",
+    accountHeadId: head.id,
+    accountHeadName: head.name,
+  });
+
+  return { ok: true };
+}
+
+/** Convenience: record one expense for each of a list of (month, year) — used
+ *  by the "Record all missing months" back-fill action. */
+export function recordExpenseBatch(
+  items: RecordExpensePayload[]
+): { ok: boolean; errors: string[] } {
+  const errors: string[] = [];
+  for (const it of items) {
+    const r = recordExpense(it);
+    if (!r.ok && r.error) errors.push(`${it.accountHeadId} ${it.month} ${it.year}: ${r.error}`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+/** All expense account heads — for the record dialog's type dropdown. */
+export function getExpenseHeads(): Array<{ id: number; name: string }> {
+  const ds = loadDataset();
+  return ds.accountHeads
+    .filter((a) => a.type === "EXPENSE" || a.type === "BOTH")
+    .map((a) => ({ id: a.id, name: a.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
