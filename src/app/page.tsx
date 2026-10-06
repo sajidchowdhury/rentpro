@@ -78,6 +78,7 @@ export default function RentProPage() {
   const [collectTenantId, setCollectTenantId] = useState<number | null>(null);
   const [activeOrg, setActiveOrg] = useState<OrgSummary | null>(null);
   const [ownsData, setOwnsData] = useState(true);
+  const [dataSource, setDataSource] = useState<"real" | "demo">("real");
   const [orgs, setOrgs] = useState<OrgSummary[]>([]);
 
   // load available months
@@ -104,6 +105,7 @@ export default function RentProPage() {
       ]);
       setActiveOrg(a.organization ?? null);
       setOwnsData(a.ownsData ?? true);
+      setDataSource(a.dataSource ?? "real");
       setOrgs(l.organizations ?? []);
     } catch { /* ignore */ }
   }, []);
@@ -316,6 +318,18 @@ export default function RentProPage() {
 
           {/* Content */}
           <div className="flex-1 p-4 md:p-6">
+            {/* demo-data banner */}
+            {dataSource === "demo" && view !== "platform" && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+                <Database className="size-4 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold">Showing DEMO data.</span> No legacy dump was found, so the app
+                  seeded a small demo dataset so you can log in and explore. To see your <span className="font-medium">real</span> data,
+                  mount your dump — set <code className="px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900">LEGACY_SQL_PATH</code> to its path
+                  (and for Docker: put it in <code className="px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900">./data/</code> + <code className="px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900">docker compose up -d</code>).
+                </div>
+              </div>
+            )}
             {/* F9: platform admin view always available (super-admin) */}
             {view === "platform" ? (
               <PlatformView onChanged={refreshOrg} onSwitchOrg={switchOrg} />

@@ -140,6 +140,7 @@ interface RentProStore {
   organizations: Organization[] | null;
   activeOrgId: string | null;
   nextOrgId: number;
+  dataSource: "real" | "demo" | null;
 }
 function getStore(): RentProStore {
   const g = globalThis as unknown as { __rentproStore__?: RentProStore };
@@ -158,6 +159,7 @@ function getStore(): RentProStore {
       organizations: null,
       activeOrgId: null,
       nextOrgId: 2,
+      dataSource: null,
     };
   }
   // Migrate: an older code version may have created the store without newer
@@ -176,6 +178,7 @@ function getStore(): RentProStore {
   if (s.organizations === undefined) s.organizations = null;
   if (s.activeOrgId === undefined) s.activeOrgId = null;
   if (s.nextOrgId === undefined) s.nextOrgId = 2;
+  if (s.dataSource === undefined) s.dataSource = null;
   return s;
 }
 const S = getStore();
@@ -253,10 +256,11 @@ function loadDataset(): Dataset {
 
   const path = findDump();
   if (!path) {
-    console.warn("[rentData] No legacy dump found — UI will show empty state.");
-    const empty: Dataset = { properties: [], units: [], tenants: [], leases: [], collections: [], txns: [], accountHeads: [], company: null, users: [] };
-    S.cache = empty;
-    return empty;
+    console.warn("[rentData] No legacy dump found — seeding DEMO data so the app is usable. Mount your dump (LEGACY_SQL_PATH) for real data.");
+    const demo = seedDemoDataset();
+    S.cache = demo;
+    S.dataSource = "demo";
+    return demo;
   }
 
   const sql = readFileSync(path, "utf-8");
@@ -401,10 +405,93 @@ function loadDataset(): Dataset {
 
   const result: Dataset = { properties, units, tenants, leases, collections, txns, accountHeads, company, users };
   S.cache = result;
+  S.dataSource = "real";
   console.log(
     `[rentData] Loaded dump: ${properties.length} properties, ${units.length} units, ${tenants.length} tenants, ${leases.length} leases, ${collections.length} collections, ${txns.length} transactions, ${accountHeads.length} account heads.`
   );
   return result;
+}
+
+/** What the data layer is currently reading from: "real" (your dump) or
+ *  "demo" (no dump found — seeded fallback so the app still works). */
+export function getDataSource(): "real" | "demo" {
+  if (!S.cache) loadDataset();
+  return (S.dataSource ?? "real") as "real" | "demo";
+}
+
+// --- demo seed (used when no legacy dump is mounted) -----------------------
+// A small, representative dataset so the app is fully explorable out of the
+// box (login + all screens) even before you mount your real dump. Demo users
+// reuse the documented password "101010Sajid".
+function seedDemoDataset(): Dataset {
+  const now = new Date();
+  const nowKey = now.getFullYear() * 12 + now.getMonth();
+  const accountHeads: AccountHead[] = [
+    { id: 1, name: "RENT COLLECTION", type: "INCOME" },
+    { id: 2, name: "ELECTRICITY BILL", type: "EXPENSE" },
+    { id: 3, name: "GAS BILL", type: "EXPENSE" },
+  ];
+  const properties: Property[] = [{ id: 1, name: "Demo Market", type: "BUILDING", unitCount: 5 }];
+  const units: Unit[] = [
+    { id: 1, propertyId: 1, name: "Shop 1 (ground floor)", type: "SHOP", defaultRent: 15000, notes: null, status: "VACANT" },
+    { id: 2, propertyId: 1, name: "Shop 2 (ground floor)", type: "SHOP", defaultRent: 12000, notes: null, status: "VACANT" },
+    { id: 3, propertyId: 1, name: "Shop 3 (ground floor)", type: "SHOP", defaultRent: 10000, notes: null, status: "VACANT" },
+    { id: 4, propertyId: 1, name: "Room 1 (1st floor)", type: "ROOM", defaultRent: 6000, notes: null, status: "VACANT" },
+    { id: 5, propertyId: 1, name: "Godown", type: "GODOWN", defaultRent: 4000, notes: null, status: "VACANT" },
+  ];
+  const tenants: Tenant[] = [
+    { id: 1, code: "D001", name: "Demo Tenant 1", mobile: "+8801700000001", nid: null, familyMember: "Demo Biz 1", status: "ACTIVE", farewelDate: null, advanceBalance: 30000 },
+    { id: 2, code: "D002", name: "Demo Tenant 2", mobile: "+8801700000002", nid: null, familyMember: "Demo Biz 2", status: "ACTIVE", farewelDate: null, advanceBalance: 0 },
+    { id: 3, code: "D003", name: "Demo Tenant 3", mobile: "+8801700000003", nid: null, familyMember: "Demo Biz 3", status: "ACTIVE", farewelDate: null, advanceBalance: 0 },
+    { id: 4, code: "D004", name: "Demo Tenant 4", mobile: "+8801700000004", nid: null, familyMember: "Demo Biz 4", status: "ACTIVE", farewelDate: null, advanceBalance: 0 },
+  ];
+  const start = new Date(now.getFullYear() - 1, 0, 1); // Jan last year
+  const leases: Lease[] = [
+    { id: 1, tenantId: 1, unitId: 1, propertyId: 1, agreementStart: start, agreementEnd: new Date(now.getFullYear() + 1, 11, 31), actualRent: 15000, rent: 15000, advance: 30000, advancePaymentDate: start, gasBill: 0, moylarBill: 0, serviceCharge: 0, otherBill: 0, status: "ACTIVE", vacatedAt: null, tenantName: "Demo Tenant 1", unitName: "Shop 1 (ground floor)", propertyName: "Demo Market" },
+    { id: 2, tenantId: 2, unitId: 2, propertyId: 1, agreementStart: start, agreementEnd: new Date(now.getFullYear() + 1, 11, 31), actualRent: 12000, rent: 12000, advance: 0, advancePaymentDate: null, gasBill: 0, moylarBill: 0, serviceCharge: 0, otherBill: 0, status: "ACTIVE", vacatedAt: null, tenantName: "Demo Tenant 2", unitName: "Shop 2 (ground floor)", propertyName: "Demo Market" },
+    { id: 3, tenantId: 3, unitId: 3, propertyId: 1, agreementStart: start, agreementEnd: new Date(now.getFullYear() + 1, 11, 31), actualRent: 10000, rent: 10000, advance: 0, advancePaymentDate: null, gasBill: 0, moylarBill: 0, serviceCharge: 0, otherBill: 0, status: "ACTIVE", vacatedAt: null, tenantName: "Demo Tenant 3", unitName: "Shop 3 (ground floor)", propertyName: "Demo Market" },
+    { id: 4, tenantId: 4, unitId: 4, propertyId: 1, agreementStart: start, agreementEnd: new Date(now.getFullYear() + 1, 11, 31), actualRent: 6000, rent: 6000, advance: 0, advancePaymentDate: null, gasBill: 0, moylarBill: 0, serviceCharge: 0, otherBill: 0, status: "ACTIVE", vacatedAt: null, tenantName: "Demo Tenant 4", unitName: "Room 1 (1st floor)", propertyName: "Demo Market" },
+  ];
+  // mark occupied units
+  units[0].status = "OCCUPIED"; units[1].status = "OCCUPIED"; units[2].status = "OCCUPIED"; units[3].status = "OCCUPIED";
+
+  // collections for the last 3 months (DONE) for tenants 1-3 (current month unpaid for demo "due")
+  const collections: Collection[] = [];
+  let cid = 1;
+  for (let off = 2; off >= 1; off--) {
+    const k = nowKey - off;
+    const y = String(Math.floor(k / 12));
+    const m = MONTHS[k % 12];
+    const recv = new Date(Math.floor(k / 12), (k % 12), 10);
+    for (const l of leases.slice(0, 3)) {
+      collections.push({ id: cid++, leaseId: l.id, tenantId: l.tenantId, rent: l.rent, gasBill: 0, moylarBill: 0, serviceCharge: 0, otherBill: 0, rentMonth: m, rentYear: y, receiveDate: recv, status: "DONE" });
+    }
+  }
+  // transactions: rent income (for each collection) + electricity expense per month
+  const txns: Txn[] = [];
+  let tid = 1;
+  for (const c of collections) {
+    txns.push({ id: tid++, inAmount: c.rent, outAmount: 0, transectionDate: c.receiveDate, note: `Rent — ${c.rentMonth} ${c.rentYear}`, type: "INCOME", accountHeadId: 1, accountHeadName: "RENT COLLECTION" });
+  }
+  for (let off = 2; off >= 0; off--) {
+    const k = nowKey - off;
+    const d = new Date(Math.floor(k / 12), (k % 12), 12);
+    txns.push({ id: tid++, inAmount: 0, outAmount: 2200, transectionDate: d, note: `Electricity — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 2, accountHeadName: "ELECTRICITY BILL" });
+    txns.push({ id: tid++, inAmount: 0, outAmount: 800, transectionDate: d, note: `Gas — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 3, accountHeadName: "GAS BILL" });
+  }
+
+  // demo users — reuse the documented password "101010Sajid"
+  const ownerHash = "$2b$10$gVTTK2PDSP.GiF3ingQa9.kNLWqWkMHBIp16sG19s5EvxpVxQl2zW";
+  const users: AuthUser[] = [
+    { id: 43, username: "E1013", passwordHash: ownerHash, displayName: "Demo Admin", role: "ADMIN", status: "Active" },
+    { id: 9001, username: "staff", passwordHash: ownerHash, displayName: "Demo Staff", role: "DATA_ENTRY", status: "Active" },
+  ];
+
+  return {
+    properties, units, tenants, leases, collections, txns, accountHeads,
+    company: { name: "RentPro Demo", shortName: "Demo", address: "Demo City", phone: null, email: null, logo: null },
+    users,
+  };
 }
 
 // --- month helpers ---------------------------------------------------------
