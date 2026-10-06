@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getDashboard } from "@/lib/rentData";
+import { getTenants } from "@/lib/rentData";
 
 export const dynamic = "force-dynamic";
 
@@ -13,13 +13,5 @@ export async function GET(request: Request) {
       { status: 400 }
     );
   }
-  const data = getDashboard(month, year);
-  const serialized = {
-    ...data,
-    recentCollections: data.recentCollections.map((c) => ({
-      ...c,
-      receiveDate: c.receiveDate ? c.receiveDate.toISOString() : null,
-    })),
-  };
-  return NextResponse.json(serialized);
+  return NextResponse.json({ tenants: getTenants(month, year) });
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Wallet, CheckCircle2, AlertCircle, Home, Building2, TrendingUp, TrendingDown, Phone, ArrowUpRight,
+  Wallet, CheckCircle2, AlertCircle, Home, Building2, TrendingUp, TrendingDown, Phone, ArrowUpRight, Receipt,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +25,11 @@ interface DashboardData {
   vacantUnits: Array<{ unitId: number; unitName: string; propertyName: string }>;
   recentCollections: Array<{ id: number; tenantName: string; unitName: string; propertyName: string; rent: number; rentMonth: string; rentYear: string; receiveDate: string | null; status: string }>;
   trend: Array<{ label: string; amount: number }>;
+  expenseDue: {
+    count: number;
+    predictedTotal: number;
+    types: Array<{ headId: number; name: string; missingCount: number; predictedAmount: number; lastRecorded: string | null }>;
+  };
 }
 
 function StatCard({
@@ -56,12 +61,12 @@ function StatCard({
   );
 }
 
-export function DashboardView({ data }: { data: DashboardData }) {
+export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; onGoToExpenses?: () => void }) {
   const {
     month, year, generated, totalToCollect, expectedLeaseCount,
     collectedAmount, paidLeaseCount, pendingAmount, dueLeaseCount,
     vacantUnitCount, occupiedUnitCount, totalUnits, totalProperties,
-    incomeThisMonth, expenseThisMonth, dueLeases, vacantUnits, recentCollections, trend,
+    incomeThisMonth, expenseThisMonth, dueLeases, vacantUnits, recentCollections, trend, expenseDue,
   } = data;
 
   const collectPct = totalToCollect > 0
@@ -114,6 +119,44 @@ export function DashboardView({ data }: { data: DashboardData }) {
           accent="bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-300"
         />
       </div>
+
+      {/* Due expenses banner (F3) — missing monthly bills, front-of-mind */}
+      <Card className={expenseDue.count > 0 ? "border-rose-200 dark:border-rose-900" : ""}>
+        <CardContent className="p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className={`size-10 rounded-lg grid place-items-center shrink-0 ${expenseDue.count > 0 ? "bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-300" : "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300"}`}>
+              <Receipt className="size-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-sm flex items-center gap-2">
+                {expenseDue.count > 0
+                  ? <>{expenseDue.count} expense type{expenseDue.count > 1 ? "s" : ""} due — {month} {year}</>
+                  : <>All recurring expenses recorded — {month} {year} 🎉</>}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {expenseDue.count > 0
+                  ? <>~ {money(expenseDue.predictedTotal)} predicted · missing bills accumulate until recorded</>
+                  : "Nothing missing."}
+              </div>
+            </div>
+            {expenseDue.count > 0 && (
+              <div className="hidden md:flex flex-wrap gap-1.5 max-w-[40%]">
+                {expenseDue.types.slice(0, 4).map((t) => (
+                  <span key={t.headId} className="text-[11px] px-2 py-1 rounded-md bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 whitespace-nowrap" title={`${t.name} — ${t.missingCount} month(s) missing · last: ${t.lastRecorded ?? "—"}`}>
+                    {t.name.length > 18 ? t.name.slice(0, 17) + "…" : t.name} · {t.missingCount}mo
+                  </span>
+                ))}
+                {expenseDue.count > 4 && <span className="text-[11px] text-muted-foreground self-center">+{expenseDue.count - 4}</span>}
+              </div>
+            )}
+            {expenseDue.count > 0 && (
+              <Button size="sm" onClick={onGoToExpenses}>
+                Record now <ArrowUpRight className="size-3.5" />
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Trend + Cashflow */}
       <div className="grid gap-4 lg:grid-cols-3">

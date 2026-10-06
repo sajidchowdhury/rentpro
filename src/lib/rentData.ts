@@ -398,6 +398,17 @@ export interface DashboardData {
     status: string;
   }>;
   trend: Array<{ label: string; amount: number }>;
+  expenseDue: {
+    count: number;
+    predictedTotal: number;
+    types: Array<{
+      headId: number;
+      name: string;
+      missingCount: number;
+      predictedAmount: number;
+      lastRecorded: string | null;
+    }>;
+  };
 }
 
 export function getAvailableMonths(): { year: string; month: string }[] {
@@ -540,6 +551,24 @@ export function getDashboard(month: string, year: string): DashboardData {
   const incomeThisMonth = monthTxns.reduce((s, t) => s + t.inAmount, 0);
   const expenseThisMonth = monthTxns.reduce((s, t) => s + t.outAmount, 0);
 
+  // recurring expenses due this month (F3) — surfaced on the dashboard so
+  // missing electricity/gas bills are front-of-mind.
+  const expTracker = getExpenseTracker(month, year);
+  const dueExpTypes = expTracker.types.filter((t) => t.recurring && !t.recordedInAsOf);
+  const expenseDue = {
+    count: dueExpTypes.length,
+    predictedTotal: dueExpTypes.reduce((s, t) => s + t.predictedAmount, 0),
+    types: dueExpTypes
+      .slice(0, 6)
+      .map((t) => ({
+        headId: t.headId,
+        name: t.name,
+        missingCount: t.missingMonths.length,
+        predictedAmount: t.predictedAmount,
+        lastRecorded: t.lastRecorded ? `${t.lastRecorded.month} ${t.lastRecorded.year}` : null,
+      })),
+  };
+
   return {
     month,
     year,
@@ -560,6 +589,7 @@ export function getDashboard(month: string, year: string): DashboardData {
     vacantUnits,
     recentCollections,
     trend,
+    expenseDue,
   };
 }
 
@@ -752,6 +782,77 @@ export function getTenantList(
 
   // biggest dues first; always-paid tenants still appear (useful to collect)
   return out.sort((a, b) => b.outstandingTotal - a.outstandingTotal);
+}
+
+export interface TenantDirectoryEntry {
+  id: number;
+  code: string;
+  name: string;
+  mobile: string | null;
+  familyMember: string | null;
+  status: "ACTIVE" | "GONE";
+  leaseCount: number;
+  activeLeaseCount: number;
+  advanceBalance: number;
+  outstandingCount: number;
+  outstandingTotal: number;
+}
+
+/** All tenants for the directory (sorted by name), with lease/advance/outstanding
+ *  summary relative to the as-of month. Includes Gone tenants (unlike
+ *  getTenantList, which is the collect-picker sorted by dues). */
+export function getTenants(
+  asOfMonth: string,
+  asOfYear: string
+): TenantDirectoryEntry[] {
+  const ds = loadDataset();
+  const asOfKey = keyFromYM(asOfYear, asOfMonth);
+  const out: TenantDirectoryEntry[] = [];
+
+  for (const t of ds.tenants) {
+    const leases = ds.leases.filter((l) => l.tenantId === t.id);
+    const activeLeaseCount = leases.filter((l) => l.status === "ACTIVE").length;
+    let outstandingCount = 0;
+    let outstandingTotal = 0;
+    for (const l of leases) {
+      const startK = dateKey(l.agreementStart);
+      if (startK === null) continue;
+      const fromK = Math.max(startK, asOfKey - 23);
+      for (let k = fromK; k <= asOfKey; k++) {
+        const y = Math.floor(k / 12);
+        const m = MONTHS[k % 12];
+        const collected = ds.collections
+          .filter(
+            (c) =>
+              c.leaseId === l.id &&
+              c.rentMonth === m &&
+              c.rentYear === String(y) &&
+              c.status === "DONE"
+          )
+          .reduce((s, c) => s + c.rent, 0);
+        const total = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+        if (collected < total) {
+          outstandingCount++;
+          outstandingTotal += total - collected;
+        }
+      }
+    }
+    out.push({
+      id: t.id,
+      code: t.code,
+      name: t.name,
+      mobile: t.mobile,
+      familyMember: t.familyMember,
+      status: t.status,
+      leaseCount: leases.length,
+      activeLeaseCount,
+      advanceBalance: tenantAdvanceBalance(t.id, ds),
+      outstandingCount,
+      outstandingTotal,
+    });
+  }
+
+  return out.sort((a, b) => a.name.localeCompare(b.name, "bn"));
 }
 
 export interface DueRow {

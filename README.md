@@ -2,7 +2,7 @@
 
 > Modern Rent & Property Management System — a clean, fast replacement for the legacy `osudlagb_home_rent` PHP/MySQL app.
 
-**Status:** Phase 1 prototype — Dashboard + Generate Rent + Unified Rent Collection (F2) + Recurring Expense Tracker (F3) + Vacate & Settlement Wizard (F5) + **Flexible Property Editor (F4)** running on real data.
+**Status:** Phase 1 prototype — Dashboard (with due-expenses card) + Generate Rent + Unified Rent Collection + Recurring Expense Tracker + Vacate & Settlement Wizard + Flexible Property Editor + **Tenants directory** running on real data.
 
 ## What is this?
 
@@ -61,7 +61,8 @@ rentpro/
     │       ├── unit/route.ts         # add unit (F4)
     │       ├── unit/update/route.ts  # edit/retire unit (F4)
     │       ├── unit/delete/route.ts  # delete unit (FK-safe) (F4)
-    │       └── types/route.ts        # property + unit type enums (F4)
+    │       ├── types/route.ts        # property + unit type enums (F4)
+    │       └── tenants-list/route.ts # tenants directory (all tenants + summary)
     ├── components/
     │   ├── rentpro/
     │   │   ├── dashboard.tsx        # KPIs, trend chart, due/vacant/recent lists
@@ -69,7 +70,8 @@ rentpro/
     │   │   ├── collect-rent.tsx     # unified collection: picker, due list, collect dialog, receipt+QR (F2)
     │   │   ├── expenses.tsx         # recurring expense tracker: due/missing, back-fill, predictions (F3)
     │   │   ├── vacate.tsx           # 5-step vacate & settlement wizard + printable statement (F5)
-    │   │   └── properties.tsx       # flexible property/unit editor: add rooms/spaces/rooftops anytime (F4)
+    │   │   ├── properties.tsx       # flexible property/unit editor: add rooms/spaces/rooftops anytime (F4)
+    │   │   └── tenants.tsx         # tenants directory: search/filter, leases+advance+outstanding, jump-to-collect
     │   └── ui/                      # full shadcn/ui component set
     └── lib/
         ├── legacyParser.ts          # SQL dump parser (mirrors scripts/lib)

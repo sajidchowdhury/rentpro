@@ -13,9 +13,10 @@ import { CollectRentView } from "@/components/rentpro/collect-rent";
 import { ExpensesView } from "@/components/rentpro/expenses";
 import { VacateView } from "@/components/rentpro/vacate";
 import { PropertiesView } from "@/components/rentpro/properties";
+import { TenantsView } from "@/components/rentpro/tenants";
 import { toast } from "sonner";
 
-type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate" | "properties";
+type View = "dashboard" | "generate" | "collect" | "expenses" | "vacate" | "properties" | "tenants";
 
 interface MonthOpt { year: string; month: string }
 
@@ -31,6 +32,10 @@ interface DashboardData {
   vacantUnits: Array<{ unitId: number; unitName: string; propertyName: string }>;
   recentCollections: Array<{ id: number; tenantName: string; unitName: string; propertyName: string; rent: number; rentMonth: string; rentYear: string; receiveDate: string | null; status: string }>;
   trend: Array<{ label: string; amount: number }>;
+  expenseDue: {
+    count: number; predictedTotal: number;
+    types: Array<{ headId: number; name: string; missingCount: number; predictedAmount: number; lastRecorded: string | null }>;
+  };
 }
 interface GenerateData {
   month: string; year: string; generated: boolean;
@@ -45,9 +50,9 @@ const NAV: { id: View; label: string; labelBn: string; icon: any; active: boolea
   { id: "expenses", label: "Expenses", labelBn: "খরচ", icon: Receipt, active: true },
   { id: "vacate", label: "Vacate & Settle", labelBn: "ভাড়া ছাড়", icon: DoorOpen, active: true },
   { id: "properties", label: "Properties", labelBn: "ভবন", icon: Building2, active: true },
+  { id: "tenants", label: "Tenants", labelBn: "ভাড়াটিয়া", icon: Users, active: true },
 ];
 const NAV_DISABLED = [
-  { label: "Tenants", labelBn: "ভাড়াটিয়া", icon: Users },
   { label: "Reports", labelBn: "রিপোর্ট", icon: BarChart3 },
 ];
 
@@ -60,6 +65,7 @@ export default function RentProPage() {
   const [gen, setGen] = useState<GenerateData | null>(null);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [collectTenantId, setCollectTenantId] = useState<number | null>(null);
 
   // load available months
   useEffect(() => {
@@ -80,7 +86,7 @@ export default function RentProPage() {
   const refresh = useCallback(async () => {
     if (!month || !year) return;
     // Collect, Expenses, Vacate & Properties views manage their own data fetching.
-    if (view === "collect" || view === "expenses" || view === "vacate" || view === "properties") {
+    if (view === "collect" || view === "expenses" || view === "vacate" || view === "properties" || view === "tenants") {
       setLoading(false);
       return;
     }
@@ -228,17 +234,19 @@ export default function RentProPage() {
                 <Skeleton className="h-72 rounded-xl" />
               </div>
             ) : view === "dashboard" && dash ? (
-              <DashboardView data={dash} />
+              <DashboardView data={dash} onGoToExpenses={() => setView("expenses")} />
             ) : view === "generate" && gen ? (
               <GenerateRentView data={gen} onGenerate={onGenerate} generating={generating} />
             ) : view === "collect" ? (
-              <CollectRentView month={month} year={year} />
+              <CollectRentView month={month} year={year} initialTenantId={collectTenantId} />
             ) : view === "expenses" ? (
               <ExpensesView month={month} year={year} />
             ) : view === "vacate" ? (
               <VacateView month={month} year={year} />
             ) : view === "properties" ? (
               <PropertiesView />
+            ) : view === "tenants" ? (
+              <TenantsView month={month} year={year} onCollect={(tid) => { setCollectTenantId(tid); setView("collect"); }} />
             ) : (
               <div className="text-muted-foreground">No data.</div>
             )}

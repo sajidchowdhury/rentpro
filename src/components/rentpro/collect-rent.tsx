@@ -67,10 +67,10 @@ function todayLocal(): string {
   return local.toISOString().slice(0, 10);
 }
 
-export function CollectRentView({ month, year }: { month: string; year: string }) {
+export function CollectRentView({ month, year, initialTenantId }: { month: string; year: string; initialTenantId?: number | null }) {
   const [tenants, setTenants] = useState<TenantSummary[]>([]);
   const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(initialTenantId ?? null);
   const [ledger, setLedger] = useState<Ledger | null>(null);
   const [loadingTenants, setLoadingTenants] = useState(true);
   const [loadingLedger, setLoadingLedger] = useState(false);
