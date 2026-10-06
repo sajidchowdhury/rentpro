@@ -20,6 +20,8 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter,
 } from "@/components/ui/table";
 import { money, shortDate } from "@/lib/format";
+import { usePagination } from "@/lib/use-pagination";
+import { Pager } from "@/components/rentpro/pager";
 import { toast } from "sonner";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -321,6 +323,7 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
 
 function DayBookTable({ data }: { data: DayBook }) {
   return (
+    <div className="overflow-x-auto">
     <ScrollArea className="max-h-[28rem]">
       <Table>
         <TableHeader>
@@ -352,11 +355,13 @@ function DayBookTable({ data }: { data: DayBook }) {
         </TableFooter>
       </Table>
     </ScrollArea>
+    </div>
   );
 }
 
 function YearlyTable({ data }: { data: Yearly }) {
   return (
+    <div className="overflow-x-auto">
     <Table>
       <TableHeader>
         <TableRow>
@@ -388,22 +393,25 @@ function YearlyTable({ data }: { data: Yearly }) {
         </TableRow>
       </TableFooter>
     </Table>
+    </div>
   );
 }
 
 function AccTable({ data }: { data: AccHead }) {
+  const paged = usePagination(data.rows, 15);
   return (
-    <ScrollArea className="max-h-[26rem]">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Account Head</TableHead><TableHead>Type</TableHead>
-            <TableHead className="text-right">Income</TableHead><TableHead className="text-right">Expense</TableHead>
-            <TableHead className="text-right">Net</TableHead><TableHead className="text-right">Txns</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {data.rows.map((r) => (
+    <div className="overflow-x-auto">
+      <ScrollArea className="max-h-[26rem]">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Account Head</TableHead><TableHead>Type</TableHead>
+              <TableHead className="text-right">Income</TableHead><TableHead className="text-right">Expense</TableHead>
+              <TableHead className="text-right">Net</TableHead><TableHead className="text-right">Txns</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {paged.pageItems.map((r) => (
             <TableRow key={String(r.headId ?? "—")}>
               <TableCell className="font-medium">{r.head}</TableCell>
               <TableCell><Badge variant="outline" className="text-[10px]">{r.type}</Badge></TableCell>
@@ -424,7 +432,9 @@ function AccTable({ data }: { data: AccHead }) {
           </TableRow>
         </TableFooter>
       </Table>
-    </ScrollArea>
+      </ScrollArea>
+      <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
+    </div>
   );
 }
 
@@ -438,6 +448,7 @@ function LedgerTable({ data }: { data: ClientLedger }) {
         <div><span className="text-muted-foreground">Closing outstanding:</span> <span className="font-bold text-rose-600 dark:text-rose-400">{money(data.closingOutstanding)}</span></div>
         <div><span className="text-muted-foreground">Leases:</span> {data.leases.length}</div>
       </div>
+      <div className="overflow-x-auto">
       <ScrollArea className="max-h-[22rem]">
         <Table>
           <TableHeader>
@@ -459,24 +470,27 @@ function LedgerTable({ data }: { data: ClientLedger }) {
           </TableBody>
         </Table>
       </ScrollArea>
+      </div>
     </div>
   );
 }
 
 function DueTable({ data }: { data: ClientDue }) {
+  const paged = usePagination(data.rows, 15);
   return (
-    <ScrollArea className="max-h-[26rem]">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Code</TableHead><TableHead>Tenant</TableHead><TableHead>Mobile</TableHead>
-            <TableHead className="text-center">Status</TableHead>
-            <TableHead className="text-right">Outstanding</TableHead><TableHead className="text-right">Months</TableHead>
-            <TableHead className="text-right">Advance</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {data.rows.map((r) => (
+    <div className="overflow-x-auto">
+      <ScrollArea className="max-h-[26rem]">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Code</TableHead><TableHead>Tenant</TableHead><TableHead>Mobile</TableHead>
+              <TableHead className="text-center">Status</TableHead>
+              <TableHead className="text-right">Outstanding</TableHead><TableHead className="text-right">Months</TableHead>
+              <TableHead className="text-right">Advance</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {paged.pageItems.map((r) => (
             <TableRow key={r.tenantId}>
               <TableCell className="font-mono text-xs">{r.code}</TableCell>
               <TableCell className="font-medium">{r.name}</TableCell>
@@ -498,7 +512,9 @@ function DueTable({ data }: { data: ClientDue }) {
           </TableRow>
         </TableFooter>
       </Table>
-    </ScrollArea>
+      </ScrollArea>
+      <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
+    </div>
   );
 }
 

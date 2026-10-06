@@ -22,6 +22,8 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { money } from "@/lib/format";
+import { usePagination } from "@/lib/use-pagination";
+import { Pager } from "@/components/rentpro/pager";
 import { toast } from "sonner";
 
 type PropertyType = "BUILDING" | "OPEN_SPACE" | "ROOFTOP" | "MIXED";
@@ -114,6 +116,7 @@ export function PropertiesView() {
 
   useEffect(() => { refreshList(); }, [refreshList]);
   useEffect(() => { refreshDetail(); }, [refreshDetail]);
+  const unitsPaged = usePagination(detail?.units ?? [], 10);
   useEffect(() => {
     fetch("/api/types").then((r) => r.json()).then((d) => {
       setPropTypes(d.propertyTypes ?? []);
@@ -323,12 +326,13 @@ export function PropertiesView() {
                     No units yet. <Button variant="link" className="p-0 h-auto" onClick={openAddUnit}>Add the first unit</Button>
                   </div>
                 ) : (
-                  <ScrollArea className="max-h-[28rem]">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Unit</TableHead>
-                          <TableHead>Type</TableHead>
+                  <div className="overflow-x-auto">
+                    <ScrollArea className="max-h-[26rem]">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Unit</TableHead>
+                            <TableHead>Type</TableHead>
                           <TableHead className="text-right">Rent</TableHead>
                           <TableHead>Occupant</TableHead>
                           <TableHead className="text-center">Status</TableHead>
@@ -336,7 +340,7 @@ export function PropertiesView() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {detail.units.map((u) => (
+                        {unitsPaged.pageItems.map((u) => (
                           <TableRow key={u.id} className={u.status === "INACTIVE" ? "opacity-50" : ""}>
                             <TableCell>
                               <div className="font-medium text-sm">{u.name}</div>
@@ -355,6 +359,8 @@ export function PropertiesView() {
                       </TableBody>
                     </Table>
                   </ScrollArea>
+                  <Pager page={unitsPaged.page} totalPages={unitsPaged.totalPages} total={unitsPaged.total} pageSize={unitsPaged.pageSize} onPrev={unitsPaged.prev} onNext={unitsPaged.next} />
+                  </div>
                 )}
               </div>
             )}

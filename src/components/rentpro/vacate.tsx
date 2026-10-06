@@ -18,6 +18,8 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { money, shortDate } from "@/lib/format";
+import { usePagination } from "@/lib/use-pagination";
+import { Pager } from "@/components/rentpro/pager";
 import { toast } from "sonner";
 
 interface ActiveLease {
@@ -125,6 +127,7 @@ export function VacateView({ month, year }: { month: string; year: string }) {
     l.tenantCode.includes(search) ||
     l.unitName.toLowerCase().includes(search.toLowerCase())
   );
+  const paged = usePagination(filtered, 10);
 
   const selectedLease = leases.find((l) => l.leaseId === selectedLeaseId) ?? null;
 
@@ -254,13 +257,13 @@ export function VacateView({ month, year }: { month: string; year: string }) {
             />
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="h-[30rem]">
+            <ScrollArea className="max-h-[28rem]">
               <div className="divide-y">
                 {loadingLeases ? (
                   [0, 1, 2, 3].map((i) => <div key={i} className="p-3"><Skeleton className="h-14 rounded" /></div>)
-                ) : filtered.length === 0 ? (
+                ) : paged.pageItems.length === 0 ? (
                   <div className="p-6 text-sm text-muted-foreground text-center">No active leases.</div>
-                ) : filtered.map((l) => (
+                ) : paged.pageItems.map((l) => (
                   <button
                     key={l.leaseId}
                     onClick={() => startSettlement(l)}
@@ -289,6 +292,7 @@ export function VacateView({ month, year }: { month: string; year: string }) {
                 ))}
               </div>
             </ScrollArea>
+            <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
           </CardContent>
         </Card>
 

@@ -12,6 +12,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { money, shortDate } from "@/lib/format";
+import { usePagination } from "@/lib/use-pagination";
+import { Pager } from "@/components/rentpro/pager";
 import { toast } from "sonner";
 
 interface TenantDir {
@@ -84,6 +86,7 @@ export function TenantsView({
       (t.familyMember ?? "").toLowerCase().includes(q)
     );
   });
+  const paged = usePagination(filtered, 10);
 
   return (
     <div className="space-y-6">
@@ -119,13 +122,13 @@ export function TenantsView({
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="h-[34rem]">
+            <ScrollArea className="max-h-[30rem]">
               <div className="divide-y">
                 {loadingList ? (
                   [0, 1, 2, 3, 4].map((i) => <div key={i} className="p-3"><Skeleton className="h-14 rounded" /></div>)
-                ) : filtered.length === 0 ? (
+                ) : paged.pageItems.length === 0 ? (
                   <div className="p-6 text-sm text-muted-foreground text-center">No tenants match.</div>
-                ) : filtered.map((t) => (
+                ) : paged.pageItems.map((t) => (
                   <button
                     key={t.id}
                     onClick={() => setSelectedId(t.id)}
@@ -156,6 +159,7 @@ export function TenantsView({
                 ))}
               </div>
             </ScrollArea>
+            <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
           </CardContent>
         </Card>
 

@@ -19,6 +19,8 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { money } from "@/lib/format";
+import { usePagination } from "@/lib/use-pagination";
+import { Pager } from "@/components/rentpro/pager";
 import { toast } from "sonner";
 
 const MONTHS = [
@@ -143,6 +145,8 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
       setSubmitting(false);
     }
   }
+
+  const typesPaged = usePagination(tracker?.types ?? [], 12);
 
   if (loading || !tracker) {
     return (
@@ -316,9 +320,9 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
         <CardContent className="p-0">
           <ScrollArea className="max-h-96">
             <div className="divide-y">
-              {tracker.types.length === 0 ? (
+              {typesPaged.pageItems.length === 0 ? (
                 <div className="p-8 text-center text-sm text-muted-foreground">No expense records yet.</div>
-              ) : tracker.types.map((t) => (
+              ) : typesPaged.pageItems.map((t) => (
                 <div key={t.headId} className="px-4 py-3 hover:bg-muted/40">
                   <div className="flex items-center gap-3">
                     <div className="flex-1 min-w-0">
@@ -368,6 +372,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
               ))}
             </div>
           </ScrollArea>
+          <Pager page={typesPaged.page} totalPages={typesPaged.totalPages} total={typesPaged.total} pageSize={typesPaged.pageSize} onPrev={typesPaged.prev} onNext={typesPaged.next} />
         </CardContent>
       </Card>
 

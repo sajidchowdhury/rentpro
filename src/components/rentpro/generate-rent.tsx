@@ -9,6 +9,8 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { money } from "@/lib/format";
+import { usePagination } from "@/lib/use-pagination";
+import { Pager } from "@/components/rentpro/pager";
 
 interface GenerateRow {
   leaseId: number; tenantName: string; unitName: string; propertyName: string;
@@ -40,6 +42,7 @@ export function GenerateRentView({
     month, year, generated, rows, toGenerateCount, alreadyCollectedCount,
     totalToCollect, alreadyCollectedAmount,
   } = data;
+  const paged = usePagination(rows, 12);
 
   const toGenerateAmount = rows
     .filter((r) => r.status !== "PAID")
@@ -142,6 +145,7 @@ export function GenerateRentView({
         </CardHeader>
         <CardContent className="p-0">
           <ScrollArea className="max-h-[28rem]">
+          <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -155,13 +159,13 @@ export function GenerateRentView({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.length === 0 ? (
+                {paged.pageItems.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                       No active leases cover {month} {year}.
                     </TableCell>
                   </TableRow>
-                ) : rows.map((r) => {
+                ) : paged.pageItems.map((r) => {
                   const bills = r.gasBill + r.serviceCharge + r.otherBill;
                   return (
                     <TableRow key={r.leaseId} className={r.status === "PAID" ? "opacity-60" : ""}>
@@ -190,7 +194,9 @@ export function GenerateRentView({
                 })}
               </TableBody>
             </Table>
+          </div>
           </ScrollArea>
+          <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
         </CardContent>
       </Card>
 

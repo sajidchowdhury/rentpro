@@ -22,6 +22,8 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { money, shortDate } from "@/lib/format";
+import { usePagination } from "@/lib/use-pagination";
+import { Pager } from "@/components/rentpro/pager";
 import { toast } from "sonner";
 
 interface TenantSummary {
@@ -138,6 +140,8 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
     t.code.includes(search) ||
     (t.mobile ?? "").includes(search)
   );
+  const paged = usePagination(filtered, 10);
+  const duePaged = usePagination(ledger?.dueRows ?? [], 8);
 
   function openCollect(row: DueRow) {
     setCollectRow(row);
@@ -287,15 +291,15 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="h-[28rem]">
+            <ScrollArea className="max-h-[26rem]">
               <div className="divide-y">
                 {loadingTenants ? (
                   [0, 1, 2, 3].map((i) => (
                     <div key={i} className="p-3"><Skeleton className="h-12 rounded" /></div>
                   ))
-                ) : filtered.length === 0 ? (
+                ) : paged.pageItems.length === 0 ? (
                   <div className="p-6 text-sm text-muted-foreground text-center">No tenants.</div>
-                ) : filtered.map((t) => (
+                ) : paged.pageItems.map((t) => (
                   <button
                     key={t.id}
                     onClick={() => setSelectedId(t.id)}
@@ -322,6 +326,7 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
                 ))}
               </div>
             </ScrollArea>
+            <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
           </CardContent>
         </Card>
 
@@ -371,11 +376,11 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
                 {/* Due rows */}
                 <ScrollArea className="max-h-[24rem]">
                   <div className="divide-y">
-                    {ledger.dueRows.length === 0 ? (
+                    {duePaged.pageItems.length === 0 ? (
                       <div className="p-8 text-center text-sm text-muted-foreground">
                         🎉 No outstanding months for {ledger.tenant.name}.
                       </div>
-                    ) : ledger.dueRows.map((r, i) => (
+                    ) : duePaged.pageItems.map((r, i) => (
                       <div key={`${r.leaseId}-${r.month}-${r.year}`} className="px-4 py-3 hover:bg-muted/40">
                         <div className="flex items-center gap-3">
                           <div className="size-9 rounded-lg bg-muted grid place-items-center text-xs font-semibold shrink-0">
@@ -405,6 +410,7 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
                     ))}
                   </div>
                 </ScrollArea>
+                <Pager page={duePaged.page} totalPages={duePaged.totalPages} total={duePaged.total} pageSize={duePaged.pageSize} onPrev={duePaged.prev} onNext={duePaged.next} />
 
                 {/* Recent collections */}
                 {ledger.recentCollections.length > 0 && (
