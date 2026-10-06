@@ -1,0 +1,855 @@
+// ============================================================================
+// RentPro — Prisma Schema (v1.0)
+// Modern Rent & Property Management System
+// ----------------------------------------------------------------------------
+// Target DB: PostgreSQL (production). See prisma/DESIGN.md for the rationale,
+// the legacy `osudlagb_home_rent` -> RentPro table mapping, and migration
+// notes.
+//
+// Postgres-compatibility highlights:
+//   - Native enums (Postgres) for all status/type fields.
+//   - Money stored as Decimal @db.Decimal(20,2) (numeric) — never Float.
+//   - Json columns for audit before/after snapshots.
+//   - Real foreign keys with explicit referential actions (legacy had none).
+//   - Row-level multi-tenancy: every business table carries organizationId.
+//
+// NOTE on prototyping: this schema can be pointed at SQLite by changing the
+// provider to "sqlite" — Prisma emulates enums and ignores @db.* modifiers.
+// For production, keep provider = "postgresql" and a Postgres DATABASE_URL.
+// ============================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+// --- Property & Unit ---
+enum PropertyType {
+  BUILDING // ভবন / multi-floor building
+  OPEN_SPACE // empty/open land not tied to a building
+  ROOFTOP // rooftop rentable area
+  MIXED // combination
+}
+
+enum UnitType {
+  SHOP // দোকান
+  ROOM // ঘর / room
+  OPEN_SPACE // open land slot
+  ROOFTOP_SLOT // rooftop partition
+  PARKING // parking spot
+  GODOWN // গোডাউন / warehouse
+  OTHER
+}
+
+enum UnitStatus {
+  OCCUPIED // currently leased
+  VACANT // free, re-rentable
+  INACTIVE // retired / not rentable anymore
+}
+
+// --- Tenant & Lease lifecycle ---
+enum TenantStatus {
+  ACTIVE // currently renting
+  GONE // left (history preserved)
+}
+
+enum LeaseStatus {
+  ACTIVE // tenant currently in the unit
+  CLOSED // vacated via settlement wizard
+  TERMINATED // ended early / administratively
+}
+
+enum ScheduleStatus {
+  DUE // generated, awaiting payment
+  PARTIAL // partially collected
+  PAID // fully collected
+  OVERDUE // past cutoff month, unpaid
+  CANCELLED // voided (e.g. tenant left mid-month)
+}
+
+enum CollectionStatus {
+  PENDING
+  DONE
+}
+
+// --- Accounting ---
+enum TransactionType {
+  INCOME // money in
+  EXPENSE // money out
+  TRANSFER // fund transfer (bank <-> cash <-> mobile)
+  ADJUSTMENT // advance adjustment / due carry-forward
+}
+
+enum AccountType {
+  INCOME
+  EXPENSE
+  BOTH
+  ASSET
+  LIABILITY
+}
+
+enum PaymentMethod {
+  CASH
+  BANK
+  MOBILE_BANK
+  CHEQUE
+}
+
+enum SettlementType {
+  REFUND // advance returned to tenant
+  ADJUST // advance applied against due
+  BOTH // partially adjust + partially refund
+}
+
+// --- Access control ---
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  DATA_ENTRY
+  TENANT
+}
+
+enum MenuType {
+  MODULE
+  ENTRY_FORM
+  REPORT
+  LINK
+}
+
+// --- Recurring expenses ---
+enum RecurringPeriod {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+  WEEKLY
+}
+
+// --- Audit & misc ---
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+enum Locale {
+  bn
+  en
+}
+
+enum EntityStatus {
+  Active
+  Inactive
+}
+
+// ============================================================================
+// 1. ORGANIZATION  (multi-tenant root — one per SaaS client)
+// ============================================================================
+
+model Organization {
+  id                String       @id @default(cuid())
+  name              String
+  shortName         String?      @map("short_name")
+  address           String?
+  phone             String?
+  email             String?      @unique
+  logo              String?
+  currency          String       @default("BDT")
+  defaultLocale     Locale       @default(bn)
+  softwareStartDate DateTime?    @map("software_start_date") @db.Date
+  softwareEndDate   DateTime?    @map("software_end_date") @db.Date
+  status            EntityStatus @default(Active)
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  users              User[]
+  roles              Role[]
+  properties         Property[]
+  tenants            Tenant[]
+  banks              Bank[]
+  mobileBanks        MobileBank[]
+  accountHeads       AccountHead[]
+  ledgerHeads        LedgerHead[]
+  leases             Lease[]
+  transactions       Transaction[]
+  settlements        Settlement[]
+  auditLogs          AuditLog[]
+  pushSubscriptions  PushSubscription[]
+  units              Unit[]
+  rentSchedules      RentSchedule[]
+  rentCollections    RentCollection[]
+  expenseTemplates   ExpenseTemplate[]
+  expenseRecords     ExpenseRecord[]
+  advanceAdjustments AdvanceAdjustment[]
+  leaseHistories     LeaseHistory[]
+
+  @@map("organizations")
+}
+
+// ============================================================================
+// 2. RBAC  — User, Role, RoleAssignment, Menu, MenuPermission
+//    Replaces legacy `admin`, `menu_list`, `menu_permission`.
+//    NOTE: `dypricpt_pass` (plaintext password backup) is DROPPED for security.
+// ============================================================================
+
+model User {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  username       String
+  password       String // bcrypt hash only — no plaintext column
+  displayName    String?      @map("display_name")
+  photo          String       @default("no_image.jpg")
+  userRole       UserRole     @default(MANAGER) @map("user_role")
+  status         EntityStatus @default(Active)
+  lastLoginAt    DateTime?    @map("last_login_at")
+  lastLoginIp    String?      @map("last_login_ip")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  roleAssignments   RoleAssignment[]
+  pushSubscriptions PushSubscription[]
+  auditLogs         AuditLog[]
+
+  @@unique([organizationId, username], name: "uq_user_org_username")
+  @@index([organizationId])
+  @@map("users")
+}
+
+model Role {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  name           String
+  description    String?
+  isSystem       Boolean      @default(false) @map("is_system")
+  status         EntityStatus @default(Active)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignments     RoleAssignment[]
+  menuPermissions MenuPermission[]
+
+  @@unique([organizationId, name], name: "uq_role_org_name")
+  @@index([organizationId])
+  @@map("roles")
+}
+
+model RoleAssignment {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  roleId    String   @map("role_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([roleId])
+  @@map("role_assignments")
+}
+
+model Menu {
+  id        String       @id @default(cuid())
+  label     String // Bangla label
+  labelEn   String?      @map("label_en")
+  link      String?
+  section   String?
+  type      MenuType     @default(MODULE)
+  parentId  String?      @map("parent_id")
+  sort      Int          @default(0)
+  icon      String?
+  status    EntityStatus @default(Active)
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  parent      Menu?            @relation("MenuHierarchy", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children    Menu[]           @relation("MenuHierarchy")
+  permissions MenuPermission[]
+
+  @@index([parentId])
+  @@index([section])
+  @@map("menus")
+}
+
+model MenuPermission {
+  id        String   @id @default(cuid())
+  roleId    String   @map("role_id")
+  menuId    String   @map("menu_id")
+  canView   Boolean  @default(false) @map("can_view")
+  canEdit   Boolean  @default(false) @map("can_edit")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  menu Menu @relation(fields: [menuId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, menuId])
+  @@index([menuId])
+  @@map("menu_permissions")
+}
+
+// ============================================================================
+// 3. PROPERTY MODEL (Section 6 — flexible: Property -> Unit, any type)
+//    Replaces legacy `setup_vobon` (building only). Now supports buildings,
+//    open/empty spaces, rooftops, and mixed — and units editable anytime.
+// ============================================================================
+
+model Property {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  name           String // Bangla name (e.g. মহিপাল মার্কেট)
+  type           PropertyType @default(BUILDING)
+  unitCount      Float        @default(0) @map("unit_count") // legacy field, kept
+  address        String?
+  notes          String?
+  status         EntityStatus @default(Active)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  units            Unit[]
+  leases           Lease[]
+  expenseTemplates ExpenseTemplate[]
+  expenseRecords   ExpenseRecord[]
+
+  @@index([organizationId, type])
+  @@index([organizationId, status])
+  @@map("properties")
+}
+
+model Unit {
+  id             String     @id @default(cuid())
+  organizationId String     @map("organization_id")
+  propertyId     String     @map("property_id")
+  name           String // Bangla unit label (e.g. L-1 S-1)
+  type           UnitType   @default(ROOM)
+  defaultRent    Decimal    @default(0) @db.Decimal(20, 2) // suggested rent
+  notes          String?
+  status         UnitStatus @default(VACANT)
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property         Property          @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  leases           Lease[]
+  rentSchedules    RentSchedule[]
+  rentCollections  RentCollection[]
+  expenseTemplates ExpenseTemplate[]
+  expenseRecords   ExpenseRecord[]
+
+  @@index([organizationId, propertyId])
+  @@index([organizationId, status])
+  @@map("units")
+}
+
+// ============================================================================
+// 4. TENANT  (replaces legacy `setup_client`)
+//    Bangla name, mobile, NID; status ACTIVE/GONE preserved.
+// ============================================================================
+
+model Tenant {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  code           String // tenant code, unique per org
+  name           String // Bangla name
+  mobile         String?
+  nid            String?
+  familyMember   String?      @map("family_member")
+  status         TenantStatus @default(ACTIVE)
+  farewelDate    DateTime?    @map("farewel_date") @db.Date
+  // Cached advance balance — source of truth is the latest AdvanceAdjustment,
+  // but cached here for fast dashboard reads. Recomputed on every adjustment.
+  advanceBalance Decimal      @default(0) @map("advance_balance") @db.Decimal(20, 2)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  leases             Lease[]
+  rentCollections    RentCollection[]
+  settlements        Settlement[]
+  advanceAdjustments AdvanceAdjustment[]
+  rentSchedules      RentSchedule[]
+
+  @@unique([organizationId, code], name: "uq_tenant_org_code")
+  @@index([organizationId, status])
+  @@index([organizationId, mobile])
+  @@map("tenants")
+}
+
+// ============================================================================
+// 5. BANKING  (replaces `setup_bank` & `setup_mobile_banking`)
+// ============================================================================
+
+model Bank {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  bankName       String       @map("bank_name")
+  branchName     String?      @map("branch_name")
+  accountNumber  String?      @map("account_number")
+  accountName    String?      @map("account_name")
+  description    String?
+  status         EntityStatus @default(Active)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([organizationId])
+  @@map("banks")
+}
+
+model MobileBank {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  name           String // Bkash, Nagad, Rocket
+  mobileNumber   String?      @map("mobile_number")
+  description    String?
+  status         EntityStatus @default(Active)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([organizationId])
+  @@map("mobile_banks")
+}
+
+// ============================================================================
+// 6. CHART OF ACCOUNTS  (replaces `setup_ac_head` & `setup_ladger_head`)
+//    ledger_head = group; account_head = leaf under a group.
+// ============================================================================
+
+model LedgerHead {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  name           String
+  specialId      String       @default("NO") @map("special_id")
+  status         EntityStatus @default(Active)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  accountHeads AccountHead[]
+
+  @@index([organizationId])
+  @@map("ledger_heads")
+}
+
+model AccountHead {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  ledgerHeadId   String       @map("ledger_head_id")
+  name           String
+  type           AccountType  @default(EXPENSE)
+  description    String?
+  hasSubAccount  Boolean      @default(false) @map("has_sub_account")
+  parentId       String?      @map("parent_id")
+  specialId      String       @default("NO") @map("special_id")
+  status         EntityStatus @default(Active)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ledgerHead       LedgerHead        @relation(fields: [ledgerHeadId], references: [id], onDelete: Restrict)
+  parent           AccountHead?      @relation("AccountHeadHierarchy", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children         AccountHead[]     @relation("AccountHeadHierarchy")
+  transactions     Transaction[]
+  expenseTemplates ExpenseTemplate[]
+  expenseRecords   ExpenseRecord[]
+
+  @@index([organizationId, ledgerHeadId])
+  @@index([organizationId, type])
+  @@map("account_heads")
+}
+
+// ============================================================================
+// 7. LEASE  (replaces `assign_unit` — tenant <-> unit, with advance + bills)
+// ============================================================================
+
+model Lease {
+  id                 String      @id @default(cuid())
+  organizationId     String      @map("organization_id")
+  tenantId           String      @map("tenant_id")
+  unitId             String      @map("unit_id")
+  propertyId         String      @map("property_id") // denormalized for fast filter
+  agreementStart     DateTime    @map("agreement_start") @db.Date
+  agreementEnd       DateTime?   @map("agreement_end") @db.Date
+  actualRent         Decimal     @map("actual_rent") @db.Decimal(20, 2)
+  rent               Decimal     @db.Decimal(20, 2)
+  advancePayment     Decimal     @default(0) @map("advance_payment") @db.Decimal(20, 2)
+  advancePaymentDate DateTime?   @map("advance_payment_date") @db.Date
+  gasBill            Decimal     @default(0) @map("gas_bill") @db.Decimal(20, 2)
+  moylarBill         Decimal     @default(0) @map("moylar_bill") @db.Decimal(20, 2)
+  serviceCharge      Decimal     @default(0) @map("service_charge") @db.Decimal(20, 2)
+  otherBill          Decimal     @default(0) @map("other_bill") @db.Decimal(20, 2)
+  status             LeaseStatus @default(ACTIVE)
+  vacatedAt          DateTime?   @map("vacated_at")
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  unit               Unit                @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  property           Property            @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  rentSchedules      RentSchedule[]
+  rentCollections    RentCollection[]
+  settlement         Settlement?
+  advanceAdjustments AdvanceAdjustment[]
+  // (the broken `unitAsCurrent` back-ref was removed — current lease is
+  // queried via Lease where unitId = ? AND status = 'ACTIVE')
+
+  @@index([organizationId, status])
+  @@index([organizationId, tenantId])
+  @@index([organizationId, unitId])
+  @@index([organizationId, propertyId])
+  @@map("leases")
+}
+
+// ============================================================================
+// 8. RENT SCHEDULE  (NEW — auto-generated monthly due per lease; F1 + dashboard)
+//    Enables: one-click "Generate [Month Year] Rent", idempotent via
+//    @@unique([leaseId, month, year]), and the "still to collect" dashboard.
+// ============================================================================
+
+model RentSchedule {
+  id             String         @id @default(cuid())
+  organizationId String         @map("organization_id")
+  leaseId        String         @map("lease_id")
+  tenantId       String         @map("tenant_id") // denormalized
+  unitId         String         @map("unit_id") // denormalized
+  month          String // e.g. "February"
+  year           String // e.g. "2026"
+  rent           Decimal        @db.Decimal(20, 2)
+  gasBill        Decimal        @default(0) @map("gas_bill") @db.Decimal(20, 2)
+  moylarBill     Decimal        @default(0) @map("moylar_bill") @db.Decimal(20, 2)
+  serviceCharge  Decimal        @default(0) @map("service_charge") @db.Decimal(20, 2)
+  otherBill      Decimal        @default(0) @map("other_bill") @db.Decimal(20, 2)
+  totalDue       Decimal        @default(0) @map("total_due") @db.Decimal(20, 2)
+  collectedSoFar Decimal        @default(0) @map("collected_so_far") @db.Decimal(20, 2)
+  status         ScheduleStatus @default(DUE)
+  generatedAt    DateTime       @default(now()) @map("generated_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lease        Lease            @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  unit         Unit             @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  collections  RentCollection[]
+
+  // Idempotent auto-generation: same lease+month+year cannot be generated twice.
+  @@unique([leaseId, month, year], name: "uq_schedule_lease_month_year")
+  @@index([organizationId, status])
+  @@index([organizationId, year, month])
+  @@index([organizationId, tenantId])
+  @@map("rent_schedules")
+}
+
+// ============================================================================
+// 9. RENT COLLECTION  (replaces `collect_rent`; now links to a schedule row)
+//    Supports: partial, advance adjustment, pay-later, back-month payment.
+// ============================================================================
+
+model RentCollection {
+  id               String           @id @default(cuid())
+  organizationId   String           @map("organization_id")
+  tenantId         String           @map("tenant_id")
+  leaseId          String           @map("lease_id")
+  unitId           String           @map("unit_id")
+  scheduleId       String?          @map("schedule_id") // nullable: allows pre-schedule back-fill
+  rent             Decimal          @db.Decimal(20, 2)
+  gasBill          Decimal          @default(0) @map("gas_bill") @db.Decimal(20, 2)
+  moylarBill       Decimal          @default(0) @map("moylar_bill") @db.Decimal(20, 2)
+  serviceCharge    Decimal          @default(0) @map("service_charge") @db.Decimal(20, 2)
+  otherBill        Decimal          @default(0) @map("other_bill") @db.Decimal(20, 2)
+  rentMonth        String           @map("rent_month")
+  rentYear         String           @map("rent_year")
+  note             String?
+  transactionId    String?          @map("transaction_id") // underlying ledger txn
+  receiveDate      DateTime?        @map("receive_date") @db.Date
+  collectionStatus CollectionStatus @default(PENDING) @map("collection_status")
+  payLater         Boolean          @default(false) @map("pay_later")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  lease             Lease              @relation(fields: [leaseId], references: [id], onDelete: Restrict)
+  unit              Unit               @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  schedule          RentSchedule?      @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  transaction       Transaction?       @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  advanceAdjustment AdvanceAdjustment? @relation("RentCollectionAdjustment") // back-ref; FK lives on AdvanceAdjustment.rentCollectionId
+
+  @@index([organizationId, tenantId])
+  @@index([organizationId, leaseId])
+  @@index([organizationId, rentYear, rentMonth])
+  @@index([organizationId, collectionStatus])
+  @@map("rent_collections")
+}
+
+// ============================================================================
+// 10. EXPENSE TEMPLATE + EXPENSE RECORD  (NEW — F3 recurring expenses)
+//     Templates define recurring electricity/gas/service per unit;
+//     Records hold actual monthly figures and support back-fill
+//     (record Jan + Feb electricity in Feb as two rows).
+// ============================================================================
+
+model ExpenseTemplate {
+  id             String          @id @default(cuid())
+  organizationId String          @map("organization_id")
+  propertyId     String          @map("property_id")
+  unitId         String?         @map("unit_id") // nullable => property-level expense
+  accountHeadId  String          @map("account_head_id") // e.g. Electricity, Gas Bill
+  name           String // e.g. "Electricity"
+  defaultAmount  Decimal         @default(0) @map("default_amount") @db.Decimal(20, 2)
+  period         RecurringPeriod @default(MONTHLY)
+  dayOfMonth     Int?            @map("day_of_month") // expected record day
+  reminderDay    Int?            @map("reminder_day") // highlight overdue after this
+  isActive       Boolean         @default(true) @map("is_active")
+  notes          String?
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  unit         Unit?           @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  accountHead  AccountHead     @relation(fields: [accountHeadId], references: [id], onDelete: Restrict)
+  records      ExpenseRecord[]
+
+  @@index([organizationId, propertyId])
+  @@index([organizationId, unitId])
+  @@index([organizationId, isActive])
+  @@map("expense_templates")
+}
+
+model ExpenseRecord {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  unitId         String?  @map("unit_id") // nullable => property-level
+  propertyId     String   @map("property_id")
+  templateId     String?  @map("template_id") // nullable => ad-hoc expense
+  accountHeadId  String   @map("account_head_id")
+  expenseMonth   String   @map("expense_month") // e.g. "January"
+  expenseYear    String   @map("expense_year") // e.g. "2026"
+  amount         Decimal  @db.Decimal(20, 2)
+  note           String?
+  transactionId  String?  @map("transaction_id")
+  recordedDate   DateTime @map("recorded_date") @db.Date
+  isBackfill     Boolean  @default(false) @map("is_backfill") // recorded for a past month
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  unit         Unit?            @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  property     Property         @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  template     ExpenseTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  accountHead  AccountHead      @relation(fields: [accountHeadId], references: [id], onDelete: Restrict)
+  transaction  Transaction?     @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+
+  // One (unit, account head, month, year) — prevents duplicate back-fill.
+  @@unique([unitId, accountHeadId, expenseMonth, expenseYear], name: "uq_expense_unit_head_month_year")
+  @@index([organizationId, propertyId])
+  @@index([organizationId, expenseYear, expenseMonth])
+  @@map("expense_records")
+}
+
+// ============================================================================
+// 11. TRANSACTION  (replaces `account_transection` — general ledger)
+//     Double-entry-ish: in_amount / out_amount, head, to/by, cheque info.
+// ============================================================================
+
+model Transaction {
+  id               String          @id @default(cuid())
+  organizationId   String          @map("organization_id")
+  code             String?
+  invoiceNo        String?         @map("invoice_no")
+  transactionType  TransactionType @default(INCOME) @map("transaction_type")
+  inAmount         Decimal         @default(0) @map("in_amount") @db.Decimal(20, 2)
+  outAmount        Decimal         @default(0) @map("out_amount") @db.Decimal(20, 2)
+  ledgerHeadId     String?         @map("ledger_head_id")
+  accountHeadId    String?         @map("account_head_id")
+  transactionTo    String?         @map("transaction_to")
+  transactionToId  Int?            @map("transaction_to_id")
+  transactionBy    PaymentMethod   @default(CASH) @map("transaction_by")
+  transactionById  Int?            @map("transaction_by_id")
+  bankId           String?         @map("bank_id")
+  mobileBankId     String?         @map("mobile_bank_id")
+  checkNumber      String?         @map("check_number")
+  checkDate        DateTime?       @map("check_date") @db.Date
+  note             String?
+  transactionDate  DateTime?       @map("transaction_date") @db.Date
+  status           EntityStatus    @default(Active)
+  dataInsertedFrom String?         @map("data_inserted_from")
+  poster           String? // user id who posted (denormalized from legacy int)
+  lastupdate       String?
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  bank               Bank?               @relation(fields: [bankId], references: [id], onDelete: SetNull)
+  mobileBank         MobileBank?         @relation(fields: [mobileBankId], references: [id], onDelete: SetNull)
+  accountHead        AccountHead?        @relation(fields: [accountHeadId], references: [id], onDelete: NoAction)
+  rentCollections    RentCollection[]
+  expenseRecords     ExpenseRecord[]
+  settlements        Settlement[]
+  advanceAdjustments AdvanceAdjustment[]
+
+  @@index([organizationId, transactionDate])
+  @@index([organizationId, transactionType])
+  @@index([organizationId, accountHeadId])
+  @@map("transactions")
+}
+
+// ============================================================================
+// 12. SETTLEMENT  (NEW — F5 vacate & final settlement wizard)
+// ============================================================================
+
+model Settlement {
+  id                 String         @id @default(cuid())
+  organizationId     String         @map("organization_id")
+  leaseId            String         @unique @map("lease_id") // one settlement per lease
+  tenantId           String         @map("tenant_id")
+  unitId             String         @map("unit_id")
+  vacateDate         DateTime       @map("vacate_date") @db.Date
+  outstandingRent    Decimal        @default(0) @map("outstanding_rent") @db.Decimal(20, 2)
+  outstandingBills   Decimal        @default(0) @map("outstanding_bills") @db.Decimal(20, 2)
+  advanceBalance     Decimal        @default(0) @map("advance_balance") @db.Decimal(20, 2)
+  advanceAdjusted    Decimal        @default(0) @map("advance_adjusted") @db.Decimal(20, 2)
+  advanceRefunded    Decimal        @default(0) @map("advance_refunded") @db.Decimal(20, 2)
+  netPayableByTenant Decimal        @default(0) @map("net_payable_by_tenant") @db.Decimal(20, 2)
+  netRefundByOwner   Decimal        @default(0) @map("net_refund_by_owner") @db.Decimal(20, 2)
+  settlementType     SettlementType @map("settlement_type")
+  transactionId      String?        @map("transaction_id") // the cash/bank movement
+  note               String?
+  status             EntityStatus   @default(Active)
+  createdAt          DateTime       @default(now()) @map("created_at")
+  updatedAt          DateTime       @updatedAt @map("updated_at")
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lease             Lease              @relation(fields: [leaseId], references: [id], onDelete: Restrict)
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  transaction       Transaction?       @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  advanceAdjustment AdvanceAdjustment? @relation("SettlementAdjustment")
+
+  @@index([organizationId, tenantId])
+  @@index([organizationId, vacateDate])
+  @@map("settlements")
+}
+
+// ============================================================================
+// 13. ADVANCE ADJUSTMENT  (NEW — F6 advance/adjustment engine)
+//     One row per advance movement: adjust against rent, refund on vacate,
+//     or top-up. balanceAfter keeps the running tenant advance balance.
+// ============================================================================
+
+model AdvanceAdjustment {
+  id               String         @id @default(cuid())
+  organizationId   String         @map("organization_id")
+  tenantId         String         @map("tenant_id")
+  leaseId          String?        @map("lease_id")
+  rentCollectionId String?        @unique @map("rent_collection_id")
+  settlementId     String?        @unique @map("settlement_id")
+  type             SettlementType // REFUND | ADJUST | BOTH
+  amountAdjusted   Decimal        @default(0) @map("amount_adjusted") @db.Decimal(20, 2)
+  balanceBefore    Decimal        @default(0) @map("balance_before") @db.Decimal(20, 2)
+  balanceAfter     Decimal        @default(0) @map("balance_after") @db.Decimal(20, 2)
+  note             String?
+  transactionId    String?        @map("transaction_id")
+  createdAt        DateTime       @default(now()) @map("created_at")
+
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  lease          Lease?          @relation(fields: [leaseId], references: [id], onDelete: SetNull)
+  rentCollection RentCollection? @relation("RentCollectionAdjustment", fields: [rentCollectionId], references: [id], onDelete: SetNull)
+  settlement     Settlement?     @relation("SettlementAdjustment", fields: [settlementId], references: [id], onDelete: SetNull)
+  transaction    Transaction?    @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, tenantId])
+  @@map("advance_adjustments")
+}
+
+// ============================================================================
+// 14. AUDIT LOG  (NEW — every create/update/delete with user + IP + snapshot)
+// ============================================================================
+
+model AuditLog {
+  id             String      @id @default(cuid())
+  organizationId String      @map("organization_id")
+  userId         String?     @map("user_id")
+  action         AuditAction
+  entity         String // table/model name affected
+  entityId       String      @map("entity_id")
+  before         Json? // row state before (UPDATE/DELETE)
+  after          Json? // row state after (CREATE/UPDATE)
+  ip             String?
+  userAgent      String?     @map("user_agent")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, entity, entityId])
+  @@index([organizationId, userId])
+  @@index([organizationId, createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================================================
+// 15. PUSH SUBSCRIPTION  (replaces `webpush_member` — FCM/web-push keys)
+//     Keys are regenerated on re-subscribe; legacy keys NOT migrated.
+// ============================================================================
+
+model PushSubscription {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  userId         String    @map("user_id")
+  endpoint       String
+  expirationTime Int?      @map("expiration_time")
+  p256dh         String?
+  authKey        String?   @map("auth_key")
+  isActive       Boolean   @default(true) @map("is_active")
+  lastDate       DateTime? @map("last_date") @db.Date
+  lastTime       String?   @map("last_time")
+  ip             String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, isActive])
+  @@map("push_subscriptions")
+}
+
+// ============================================================================
+// 16. LEASE HISTORY  (archive of legacy `setup_rent_history`)
+//     Kept for reference; the new system recomputes history from leases.
+// ============================================================================
+
+model LeaseHistory {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  zoneId         Int?      @map("zone_id") // legacy
+  roomNo         String?   @map("room_no")
+  clientId       Int?      @map("client_id") // legacy id (mapped separately)
+  rent           Decimal?  @db.Decimal(20, 2)
+  advance        Decimal?  @db.Decimal(20, 2)
+  agreementStart DateTime? @map("agreement_start") @db.Date
+  agreementEnd   DateTime? @map("agreement_end") @db.Date
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, clientId])
+  @@map("lease_histories")
+}

@@ -1,0 +1,20 @@
+{
+  "name": "rentpro",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Modern Rent & Property Management System — multi-tenant SaaS ready",
+  "scripts": {
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate dev",
+    "db:generate": "prisma generate",
+    "db:studio": "prisma studio",
+    "db:validate": "prisma validate",
+    "db:format": "prisma format"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  }
+}
