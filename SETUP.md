@@ -1,7 +1,56 @@
 # Local setup & testing (Docker + Postgres + migration + auth)
 
-This guide gets RentPro running locally with a real Postgres, loads your
-legacy data into it (with a reconciliation report), and lets you log in.
+This guide gets RentPro running locally — either the **whole stack in
+containers** (Postgres + app) or just Postgres in a container with the app
+on your host. Both load your legacy data (with a reconciliation report)
+and let you log in.
+
+## A. Everything in containers (recommended)
+
+The app + Postgres both run as containers. The app seeds its in-memory
+data layer from your dump (mounted read-only), so it shows real data with
+no migration step required.
+
+```bash
+# 1. drop your legacy dump here (mounted into the app container)
+mkdir -p data
+cp /path/to/osudlagb_home_rent.sql data/
+
+# 2. set a NextAuth secret
+cp .env.example .env
+#   -> set NEXTAUTH_SECRET=$(openssl rand -base64 32)
+
+# 3. build + run the whole stack
+docker compose up -d --build
+
+# 4. open http://localhost:3000  ->  log in (E1013 / 101010Sajid)
+docker compose logs -f app       # tail the app
+```
+
+That's it — Postgres + the Next.js app (multi-stage standalone build) are
+both running. The app shows your real data and is gated by NextAuth.
+
+**Load the dump into Postgres too** (the production path — optional, for
+verification / the eventual Prisma swap). The migration runs on your host
+against the postgres container on `:5432`:
+
+```bash
+bun run db:migrate                # create the schema (prisma migrate dev)
+bun run migrate:write             # load the dump -> Postgres + reconciliation report
+```
+
+> The app keeps using the in-memory layer (seeded from the mounted dump)
+> until you swap `src/lib/rentData.ts` to Prisma queries — the loaded
+> Postgres data is ready for that swap whenever you want.
+
+```bash
+docker compose down               # stop (keep data)
+docker compose down -v            # stop + WIPE the postgres volume
+```
+
+---
+
+## B. Postgres in a container, app on your host (for development)
 
 > The app UI also runs without Postgres (in-memory, seeded from the dump),
 > so you can preview without steps 1–3. Steps 1–3 are for testing the
@@ -16,8 +65,8 @@ legacy data into it (with a reconciliation report), and lets you log in.
 ## 1. Start Postgres
 
 ```bash
-docker compose up -d            # starts postgres on localhost:5432
-docker compose ps               # confirm it's healthy
+docker compose up -d postgres     # starts postgres on localhost:5432
+docker compose ps                 # confirm it's healthy
 ```
 
 ## 2. Configure environment

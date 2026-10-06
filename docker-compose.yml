@@ -1,9 +1,16 @@
-# RentPro local Postgres for development & migration testing.
-# Usage:
-#   docker compose up -d        # start postgres
-#   docker compose logs -f      # tail logs
-#   docker compose down        # stop (keeps data volume)
-#   docker compose down -v    # stop + WIPE the database volume
+# RentPro — full stack in containers (Postgres + Next.js app).
+#
+# Quick start:
+#   1. put your legacy dump at ./data/osudlagb_home_rent.sql
+#   2. cp .env.example .env  (set NEXTAUTH_SECRET)
+#   3. docker compose up -d --build
+#   4. open http://localhost:3000  ->  log in (E1013 / 101010Sajid)
+#
+# Load the dump into Postgres (one-off, for the production path):
+#   docker compose up -d postgres
+#   bun run db:migrate && bun run migrate:write   # on the host, against :5432
+#
+# Wipe everything:  docker compose down -v
 
 services:
   postgres:
@@ -23,6 +30,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  app:
+    build: .
+    container_name: rentpro-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      # the app talks to postgres by service name
+      DATABASE_URL: postgresql://rentpro:rentpro@postgres:5432/rentpro?schema=public
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-to-a-long-random-string}
+      NEXTAUTH_URL: http://localhost:3000
+      # The app's in-memory data layer seeds from this dump (mounted below).
+      # Put osudlagb_home_rent.sql in ./data/ — or leave it out for an empty
+      # dataset (the app still runs + you can log in).
+      LEGACY_SQL_PATH: /data/osudlagb_home_rent.sql
+    volumes:
+      # mount your legacy dump read-only so the app shows real data
+      - ./data:/data:ro
 
 volumes:
   rentpro_pgdata:

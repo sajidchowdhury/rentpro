@@ -8,18 +8,20 @@
 
 RentPro is a ground-up rewrite of an existing Bangla-language rent management system. It keeps **100% of the historical data** (migrated with reconciliation into Postgres via Docker), fixes the daily pain points of the old system, is gated by **NextAuth + role-based access**, and is built **multi-tenant from day one** so it can be sold as a SaaS to other property owners.
 
-## Quick start (local, with Docker)
+## Quick start (local — whole stack in containers)
 
-See **[SETUP.md](./SETUP.md)** for the full guide. In short:
+See **[SETUP.md](./SETUP.md)** for the full guide. Shortest path:
 
 ```bash
-docker compose up -d                # 1. start Postgres
-cp .env.example .env                # 2. set DATABASE_URL + LEGACY_SQL_PATH + NEXTAUTH_SECRET
-bun install
-bun run db:migrate                  # 3. create the schema
-bun run migrate:write               # 4. load your legacy dump → Postgres (+ reconciliation report)
-bun run dev                         # 5. http://localhost:3000  →  log in (E1013 / 101010Sajid)
+mkdir -p data && cp /path/to/osudlagb_home_rent.sql data/   # your legacy dump
+cp .env.example .env          # set NEXTAUTH_SECRET=$(openssl rand -base64 32)
+docker compose up -d --build  # Postgres + the Next.js app (multi-stage standalone)
+# open http://localhost:3000  ->  log in (E1013 / 101010Sajid)
 ```
+
+The app container seeds its in-memory layer from the mounted dump (real
+data, no migration needed). To also load the dump into Postgres (the
+production path): `bun run db:migrate && bun run migrate:write`.
 
 Login roles: `E1013`/`E0001` (Admin — all 9 screens) · `staff` (Data Entry — dashboard + collect + expenses + tenants only).
 

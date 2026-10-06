@@ -1,0 +1,21 @@
+# Build context exclusions — keep the image small + secrets out.
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+data
+*.log
+dev.log
+server.log
+.vscode
+.idea
+.DS_Store
+README.md
+SETUP.md
+PRD.md
+Dockerfile
+.dockerignore
+docker-compose.yml
