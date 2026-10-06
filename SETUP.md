@@ -30,6 +30,12 @@ docker compose logs -f app       # tail the app
 That's it — Postgres + the Next.js app (multi-stage standalone build) are
 both running. The app shows your real data and is gated by NextAuth.
 
+> ⚠️ **Don't also run `bun run dev` on your host** while the app container is
+> up — it owns port 3000, so `bun run dev` will fail with `EADDRINUSE`. The
+> container IS the app; just open http://localhost:3000 in your browser.
+> If you want hot-reload dev on the host instead: `docker compose stop app`
+> (free :3000) then `bun run dev` — or run only postgres: `docker compose up -d postgres`.
+
 **Load the dump into Postgres too** (the production path — optional, for
 verification / the eventual Prisma swap). The migration runs on your host
 against the postgres container on `:5432`:
