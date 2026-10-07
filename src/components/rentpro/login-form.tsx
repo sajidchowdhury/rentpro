@@ -92,12 +92,12 @@ export function LoginForm() {
                 <Label htmlFor="username" className="text-xs">Username</Label>
                 <div className="relative">
                   <User className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
-                  <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" className="pl-8" autoFocus />
+                  <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" className="pl-8" autoFocus autoComplete="username" />
                 </div>
               </div>
               <div>
                 <Label htmlFor="password" className="text-xs">Password</Label>
-                <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+                <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoComplete="current-password" />
               </div>
               {error && <div className="text-xs text-rose-600 dark:text-rose-400">{error}</div>}
               <Button type="submit" className="w-full" disabled={loading}>
@@ -112,22 +112,22 @@ export function LoginForm() {
               </div>
               <div>
                 <Label htmlFor="su-name" className="text-xs">Your name</Label>
-                <Input id="su-name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="John Doe" autoFocus />
+                <Input id="su-name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="John Doe" autoFocus autoComplete="name" />
               </div>
               <div>
                 <Label htmlFor="su-org" className="text-xs">Organization name</Label>
-                <Input id="su-org" value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="John's Properties" />
+                <Input id="su-org" value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="John's Properties" autoComplete="organization" />
               </div>
               <div>
                 <Label htmlFor="su-username" className="text-xs">Username</Label>
                 <div className="relative">
                   <User className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
-                  <Input id="su-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="johndoe" className="pl-8" />
+                  <Input id="su-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="johndoe" className="pl-8" autoComplete="username" />
                 </div>
               </div>
               <div>
                 <Label htmlFor="su-password" className="text-xs">Password (min 6 chars)</Label>
-                <Input id="su-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+                <Input id="su-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" autoComplete="new-password" />
               </div>
               {error && <div className="text-xs text-rose-600 dark:text-rose-400">{error}</div>}
               <Button type="submit" className="w-full" disabled={loading}>
