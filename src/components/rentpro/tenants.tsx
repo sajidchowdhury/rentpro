@@ -87,6 +87,7 @@ export function TenantsView({
     );
   });
   const paged = usePagination(filtered, 10);
+  const dueRowsPaged = usePagination(ledger?.dueRows ?? [], 8);
 
   return (
     <div className="space-y-6">
@@ -234,18 +235,16 @@ export function TenantsView({
                     </div>
                     <ScrollArea className="max-h-48">
                       <div className="space-y-1.5">
-                        {ledger.dueRows.slice(0, 10).map((r) => (
+                        {dueRowsPaged.pageItems.map((r) => (
                           <div key={`${r.leaseId}-${r.month}-${r.year}`} className="flex items-center gap-2 text-xs">
                             <span className="w-24 shrink-0">{r.month} {r.year}</span>
                             <span className="flex-1 truncate text-muted-foreground">{r.unitName}</span>
                             <span className="font-medium">{money(r.remaining)}</span>
                           </div>
                         ))}
-                        {ledger.dueRows.length > 10 && (
-                          <div className="text-[11px] text-muted-foreground">+ {ledger.dueRows.length - 10} more</div>
-                        )}
                       </div>
                     </ScrollArea>
+                    <Pager page={dueRowsPaged.page} totalPages={dueRowsPaged.totalPages} total={dueRowsPaged.total} pageSize={dueRowsPaged.pageSize} onPrev={dueRowsPaged.prev} onNext={dueRowsPaged.next} />
                   </div>
                 )}
 

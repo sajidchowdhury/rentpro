@@ -147,6 +147,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
   }
 
   const typesPaged = usePagination(tracker?.types ?? [], 12);
+  const duePaged = usePagination(tracker ? tracker.types.filter((t) => t.recurring && !t.recordedInAsOf) : [], 8);
 
   if (loading || !tracker) {
     return (
@@ -231,13 +232,13 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
           <CardDescription>Recurring expenses not yet recorded this month, with their missing months</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollArea className="max-h-[26rem]">
+          <ScrollArea className="max-h-[24rem]">
             <div className="divide-y">
-              {dueTypes.length === 0 ? (
+              {duePaged.pageItems.length === 0 ? (
                 <div className="p-8 text-center text-sm text-muted-foreground">
                   🎉 All recurring expenses are recorded for {month} {year}.
                 </div>
-              ) : dueTypes.map((t) => (
+              ) : duePaged.pageItems.map((t) => (
                 <div key={t.headId} className="px-4 py-3 hover:bg-muted/40">
                   <div className="flex items-center gap-3">
                     <div className="flex-1 min-w-0">
@@ -251,13 +252,13 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
                       </div>
                       {t.missingMonths.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1.5">
-                          {t.missingMonths.slice(-8).map((m) => (
+                          {t.missingMonths.slice(-5).map((m) => (
                             <span key={`${m.month}-${m.year}`} className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300">
                               {m.month.slice(0, 3)} {m.year}
                             </span>
                           ))}
-                          {t.missingMonths.length > 8 && (
-                            <span className="text-[10px] px-1.5 py-0.5 text-muted-foreground">+{t.missingMonths.length - 8} more</span>
+                          {t.missingMonths.length > 5 && (
+                            <span className="text-[10px] px-1.5 py-0.5 text-muted-foreground">+{t.missingMonths.length - 5} more</span>
                           )}
                         </div>
                       )}
@@ -277,6 +278,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
               ))}
             </div>
           </ScrollArea>
+          <Pager page={duePaged.page} totalPages={duePaged.totalPages} total={duePaged.total} pageSize={duePaged.pageSize} onPrev={duePaged.prev} onNext={duePaged.next} />
         </CardContent>
       </Card>
 
@@ -332,19 +334,14 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
                           ? <Badge variant="secondary" className="text-[10px]">Recurring</Badge>
                           : <Badge variant="outline" className="text-[10px]">One-off</Badge>}
                       </div>
-                      {/* recent trend as inline bars */}
+                      {/* recent history as compact text */}
                       {t.recent.length > 0 && (
-                        <div className="flex items-end gap-1 mt-2 h-8">
-                          {t.recent.slice().reverse().map((r, i) => {
-                            const max = Math.max(...t.recent.map((x) => x.amount), 1);
-                            const h = Math.max(4, Math.round((r.amount / max) * 32));
-                            return (
-                              <div key={i} className="flex flex-col items-center gap-0.5" title={`${r.month} ${r.year}: ${money(r.amount)}`}>
-                                <div className="w-5 rounded-sm bg-primary/70" style={{ height: `${h}px` }} />
-                                <span className="text-[8px] text-muted-foreground">{r.month.slice(0, 1)}{r.year.slice(-2)}</span>
-                              </div>
-                            );
-                          })}
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1.5 text-[10px] text-muted-foreground">
+                          {t.recent.slice().reverse().map((r, i) => (
+                            <span key={i} title={`${r.month} ${r.year}`}>
+                              {r.month.slice(0, 3)} {r.year.slice(-2)}: <span className="font-medium text-foreground">{money(r.amount)}</span>
+                            </span>
+                          ))}
                         </div>
                       )}
                     </div>

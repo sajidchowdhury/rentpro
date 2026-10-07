@@ -9,6 +9,8 @@ import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { money, shortDate } from "@/lib/format";
+import { usePagination } from "@/lib/use-pagination";
+import { Pager } from "@/components/rentpro/pager";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
 } from "recharts";
@@ -68,6 +70,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
     vacantUnitCount, occupiedUnitCount, totalUnits, totalProperties,
     incomeThisMonth, expenseThisMonth, dueLeases, vacantUnits, recentCollections, trend, expenseDue,
   } = data;
+  const duePaged = usePagination(dueLeases, 8);
 
   const collectPct = totalToCollect > 0
     ? Math.min(100, Math.round((collectedAmount / totalToCollect) * 100))
@@ -232,13 +235,13 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
             <CardDescription>{dueLeases.length} pending · sorted by months missed</CardDescription>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="h-80">
+            <ScrollArea className="max-h-[20rem]">
               <div className="divide-y">
-                {dueLeases.length === 0 ? (
+                {duePaged.pageItems.length === 0 ? (
                   <div className="p-6 text-sm text-muted-foreground text-center">
                     🎉 All tenants have paid for {month} {year}.
                   </div>
-                ) : dueLeases.map((d) => (
+                ) : duePaged.pageItems.map((d) => (
                   <div key={d.leaseId} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/40">
                     <div className="size-9 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 grid place-items-center text-xs font-semibold shrink-0">
                       {d.monthsMissed}
@@ -262,6 +265,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
                 ))}
               </div>
             </ScrollArea>
+            <Pager page={duePaged.page} totalPages={duePaged.totalPages} total={duePaged.total} pageSize={duePaged.pageSize} onPrev={duePaged.prev} onNext={duePaged.next} />
           </CardContent>
         </Card>
 
