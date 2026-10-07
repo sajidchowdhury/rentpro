@@ -1,14 +1,10 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import { verifyCredentials } from "@/lib/rentData";
+import { verifyCredentials, setActiveOrg } from "@/lib/rentData";
 
-// NextAuth options. The credentials provider verifies against the in-memory
-// users loaded from the dump's `admin` table (bcrypt $2y$ -> $2b$). In
-// production (after migrate:write), swap verifyCredentials to query the
-// Postgres `users` table via Prisma — the rest stays the same.
 export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt" },
-  pages: { signIn: "/" }, // the app gates login on the / route (client-side)
+  pages: { signIn: "/" },
   providers: [
     CredentialsProvider({
       name: "Credentials",
@@ -23,12 +19,15 @@ export const authOptions: NextAuthOptions = {
           credentials.password
         );
         if (!user) return null;
+        // set the active org to the user's org so they see their own data
+        setActiveOrg(user.orgId);
         return {
-          id: String(user.id),
+          id: user.id,
           name: user.displayName,
-          email: user.username, // store username in email slot
+          email: user.username,
           role: user.role,
           username: user.username,
+          orgId: user.orgId,
         } as any;
       },
     }),
@@ -40,6 +39,7 @@ export const authOptions: NextAuthOptions = {
         token.uid = u.id;
         token.role = u.role;
         token.username = u.username;
+        token.orgId = u.orgId;
       }
       return token;
     },
@@ -48,6 +48,7 @@ export const authOptions: NextAuthOptions = {
         (session.user as any).id = token.uid;
         (session.user as any).role = token.role;
         (session.user as any).username = token.username;
+        (session.user as any).orgId = token.orgId;
       }
       return session;
     },

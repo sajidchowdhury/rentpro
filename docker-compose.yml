@@ -45,6 +45,8 @@ services:
       DATABASE_URL: postgresql://rentpro:rentpro@postgres:5432/rentpro?schema=public
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-to-a-long-random-string}
       NEXTAUTH_URL: http://localhost:3000
+      OWNER_USERNAME: ${OWNER_USERNAME:-admin}
+      OWNER_PASSWORD: ${OWNER_PASSWORD:-admin123}
       # The app's in-memory data layer seeds from this dump (mounted below).
       # Put osudlagb_home_rent.sql in ./data/ — or leave it out for an empty
       # dataset (the app still runs + you can log in).

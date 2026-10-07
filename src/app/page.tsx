@@ -109,7 +109,6 @@ export default function RentProPage() {
       setOrgs(l.organizations ?? []);
     } catch { /* ignore */ }
   }, []);
-  useEffect(() => { refreshOrg(); }, [refreshOrg]);
 
   const switchOrg = useCallback(async (id: string) => {
     try {
@@ -198,6 +197,15 @@ export default function RentProPage() {
   const { data: session, status } = useSession();
   const role = (session?.user as any)?.role as Role | undefined;
   const allowedViews = getAllowedViews(role);
+
+  // re-fetch the active org after login (the authorize callback sets the
+  // active org server-side; this picks it up on the client).
+  useEffect(() => {
+    if (session?.user) {
+      setDash(null); setGen(null);
+      refreshOrg();
+    }
+  }, [session?.user?.id]);
 
   // if the current view isn't allowed for this role, fall back to dashboard
   useEffect(() => {

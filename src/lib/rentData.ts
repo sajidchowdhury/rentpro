@@ -122,6 +122,19 @@ export interface Organization {
   isOwner: boolean;
 }
 
+// A managed user — NOT from the legacy dump. Seeded at startup (the owner) or
+// created via signup. Each user is linked to their own org. The owner's org
+// (org_1) owns the loaded dump data; signup orgs start empty.
+export interface ManagedUser {
+  id: string;
+  username: string;
+  passwordHash: string;
+  displayName: string;
+  role: "ADMIN" | "MANAGER" | "DATA_ENTRY";
+  orgId: string;
+  status: "Active" | "Inactive";
+}
+
 // --- global singleton store -------------------------------------------------
 // Next.js dev (Turbopack) can give each API route its own module instance of
 // this file, which would reset module-level state between requests. Backing
@@ -141,6 +154,8 @@ interface RentProStore {
   activeOrgId: string | null;
   nextOrgId: number;
   dataSource: "real" | "demo" | null;
+  managedUsers: ManagedUser[] | null;
+  nextManagedUserId: number;
 }
 function getStore(): RentProStore {
   const g = globalThis as unknown as { __rentproStore__?: RentProStore };
@@ -160,6 +175,8 @@ function getStore(): RentProStore {
       activeOrgId: null,
       nextOrgId: 2,
       dataSource: null,
+      managedUsers: null,
+      nextManagedUserId: 2,
     };
   }
   // Migrate: an older code version may have created the store without newer
@@ -179,6 +196,8 @@ function getStore(): RentProStore {
   if (s.activeOrgId === undefined) s.activeOrgId = null;
   if (s.nextOrgId === undefined) s.nextOrgId = 2;
   if (s.dataSource === undefined) s.dataSource = null;
+  if (s.managedUsers === undefined) s.managedUsers = null;
+  if (s.nextManagedUserId === undefined) s.nextManagedUserId = 2;
   return s;
 }
 const S = getStore();
@@ -256,11 +275,11 @@ function loadDataset(): Dataset {
 
   const path = findDump();
   if (!path) {
-    console.warn("[rentData] No legacy dump found — seeding DEMO data so the app is usable. Mount your dump (LEGACY_SQL_PATH) for real data.");
-    const demo = seedDemoDataset();
-    S.cache = demo;
-    S.dataSource = "demo";
-    return demo;
+    console.warn("[rentData] No legacy dump found — running with an empty dataset. Mount your dump (LEGACY_SQL_PATH) to load your real data.");
+    const empty: Dataset = { properties: [], units: [], tenants: [], leases: [], collections: [], txns: [], accountHeads: [], company: null, users: [] };
+    S.cache = empty;
+    S.dataSource = "real";
+    return empty;
   }
 
   // turbopackIgnore: the dump path is dynamic (LEGACY_SQL_PATH), so Turbopack
@@ -383,28 +402,9 @@ function loadDataset(): Dataset {
   const company = companyRows[0] ?? null;
 
   // F2 (point 2): users for auth — from the dump's `admin` table. Passwords
-  // are bcrypt; convert PHP $2y$ -> Node $2b$. Add a demo Data-Entry user
-  // (same password) so role-based access is demonstrable.
-  const adminRows = rows("admin").map((r) => {
-    let hash = str(r.password);
-    if (hash.startsWith("$2y$")) hash = "$2b$" + hash.slice(4);
-    return {
-      id: num(r.id),
-      username: str(r.username) || String(r.id),
-      passwordHash: hash,
-      displayName: str(r.hr_name) || str(r.username) || `User ${r.id}`,
-      role: (r.user_type === "Admin" ? "ADMIN" : "MANAGER") as Role,
-      status: r.hr_status === "Active" ? ("Active" as const) : ("Inactive" as const),
-    } as AuthUser;
-  }).filter((u) => u.id);
-  const ownerHash = adminRows[0]?.passwordHash ?? "";
-  const users: AuthUser[] = [...adminRows];
-  if (ownerHash && !users.some((u) => u.username === "staff")) {
-    users.push({
-      id: 9001, username: "staff", passwordHash: ownerHash,
-      displayName: "Demo Staff", role: "DATA_ENTRY", status: "Active",
-    });
-  }
+  // Users are NOT loaded from the legacy `admin` table. Auth uses managedUsers
+  // (store-managed, seeded with the owner at startup + grown via signup).
+  const users: AuthUser[] = [];
 
   const result: Dataset = { properties, units, tenants, leases, collections, txns, accountHeads, company, users };
   S.cache = result;
@@ -2509,28 +2509,83 @@ export type ViewId =
   | "vacate" | "properties" | "tenants" | "reports" | "platform";
 
 export interface AuthenticatedUser {
-  id: number;
+  id: string;
   username: string;
   displayName: string;
   role: Role;
+  orgId: string;
+}
+
+// --- managed users (owner + signups) ---------------------------------------
+function ensureManagedUsers(): ManagedUser[] {
+  if (S.managedUsers) return S.managedUsers;
+  ensureOrganizations();
+  const ownerUsername = process.env.OWNER_USERNAME || "admin";
+  const ownerPassword = process.env.OWNER_PASSWORD || "admin123";
+  const hash = bcrypt.hashSync(ownerPassword, 10);
+  const owner: ManagedUser = {
+    id: "user_owner",
+    username: ownerUsername,
+    passwordHash: hash,
+    displayName: "Owner",
+    role: "ADMIN",
+    orgId: OWNER_ORG_ID,
+    status: "Active",
+  };
+  S.managedUsers = [owner];
+  console.log(`[rentData] Seeded owner user "${ownerUsername}" (org: ${OWNER_ORG_ID}).`);
+  return S.managedUsers;
+}
+
+export interface RegisterPayload {
+  username: string;
+  password: string;
+  displayName: string;
+  orgName: string;
+}
+export function registerUser(p: RegisterPayload): { ok: boolean; error?: string; userId?: string; orgId?: string } {
+  ensureManagedUsers();
+  if (!p.username?.trim() || !p.password?.trim()) return { ok: false, error: "Username and password are required" };
+  if (p.password.length < 6) return { ok: false, error: "Password must be at least 6 characters" };
+  if (S.managedUsers!.some((u) => u.username.toLowerCase() === p.username.toLowerCase())) {
+    return { ok: false, error: "Username already taken" };
+  }
+  // create a new org for the new user
+  const orgResult = createOrganization({ name: p.orgName?.trim() || `${p.displayName}'s Properties`, plan: "TRIAL" });
+  if (!orgResult.ok || !orgResult.id) return { ok: false, error: "Failed to create organization" };
+  const id = `user_${S.nextManagedUserId++}`;
+  const hash = bcrypt.hashSync(p.password, 10);
+  const user: ManagedUser = {
+    id,
+    username: p.username.trim(),
+    passwordHash: hash,
+    displayName: p.displayName?.trim() || p.username.trim(),
+    role: "ADMIN",
+    orgId: orgResult.id,
+    status: "Active",
+  };
+  S.managedUsers!.push(user);
+  // set the new org's activeOrgId so the user sees their own org
+  S.activeOrgId = orgResult.id;
+  return { ok: true, userId: id, orgId: orgResult.id };
 }
 
 export async function verifyCredentials(
   username: string,
   password: string
 ): Promise<AuthenticatedUser | null> {
-  const ds = loadDataset();
-  const u = ds.users.find(
+  const users = ensureManagedUsers();
+  const u = users.find(
     (x) => x.username.toLowerCase() === username.toLowerCase() && x.status === "Active"
   );
-  if (!u || !u.passwordHash) return null;
+  if (!u) return null;
   try {
     const ok = await bcrypt.compare(password, u.passwordHash);
     if (!ok) return null;
   } catch {
     return null;
   }
-  return { id: u.id, username: u.username, displayName: u.displayName, role: u.role };
+  return { id: u.id, username: u.username, displayName: u.displayName, role: u.role as Role, orgId: u.orgId };
 }
 
 const ROLE_VIEWS: Record<Role, ViewId[]> = {
