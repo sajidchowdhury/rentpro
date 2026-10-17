@@ -471,8 +471,10 @@ async function migrateTransactions(ctx: TransformContext) {
         transactionTo: strOrNull(r.transection_to),
         transactionToId: r.transection_to_id === null ? null : Number(r.transection_to_id),
         transactionBy: mapPayMethod(r.transection_by),
-        bankId: id("bank", r.transection_by_id) ?? null,
-        mobileBankId: id("mbank", r.transection_by_id) ?? null,
+        bankId: mapPayMethod(r.transection_by) === "BANK" && num(r.transection_by_id) > 0
+          ? id("bank", r.transection_by_id) : null,
+        mobileBankId: mapPayMethod(r.transection_by) === "MOBILE_BANK" && num(r.transection_by_id) > 0
+          ? id("mbank", r.transection_by_id) : null,
         checkNumber: strOrNull(r.check_number),
         checkDate: dt(r.check_date),
         note: strOrNull(r.note),
