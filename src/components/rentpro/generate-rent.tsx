@@ -144,7 +144,7 @@ export function GenerateRentView({
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollArea className="max-h-[28rem]">
+          <div className="max-h-[28rem] overflow-y-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -193,7 +193,7 @@ export function GenerateRentView({
                 })}
               </TableBody>
             </Table>
-          </ScrollArea>
+          </div>
           <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
         </CardContent>
       </Card>
