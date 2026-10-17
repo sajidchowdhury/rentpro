@@ -324,7 +324,7 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
 function DayBookTable({ data }: { data: DayBook }) {
   return (
     <div className="overflow-x-auto">
-    <ScrollArea className="max-h-[28rem]">
+    <div className="max-h-[28rem] overflow-y-auto">
       <Table>
         <TableHeader>
           <TableRow>
@@ -354,7 +354,7 @@ function DayBookTable({ data }: { data: DayBook }) {
           </TableRow>
         </TableFooter>
       </Table>
-    </ScrollArea>
+    </div>
     </div>
   );
 }
@@ -401,7 +401,7 @@ function AccTable({ data }: { data: AccHead }) {
   const paged = usePagination(data.rows, 15);
   return (
     <div className="overflow-x-auto">
-      <ScrollArea className="max-h-[26rem]">
+      <div className="max-h-[26rem] overflow-y-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -432,7 +432,7 @@ function AccTable({ data }: { data: AccHead }) {
           </TableRow>
         </TableFooter>
       </Table>
-      </ScrollArea>
+      </div>
       <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
     </div>
   );
@@ -449,7 +449,7 @@ function LedgerTable({ data }: { data: ClientLedger }) {
         <div><span className="text-muted-foreground">Leases:</span> {data.leases.length}</div>
       </div>
       <div className="overflow-x-auto">
-      <ScrollArea className="max-h-[22rem]">
+      <div className="max-h-[22rem] overflow-y-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -469,7 +469,7 @@ function LedgerTable({ data }: { data: ClientLedger }) {
             ))}
           </TableBody>
         </Table>
-      </ScrollArea>
+      </div>
       </div>
     </div>
   );
@@ -479,7 +479,7 @@ function DueTable({ data }: { data: ClientDue }) {
   const paged = usePagination(data.rows, 15);
   return (
     <div className="overflow-x-auto">
-      <ScrollArea className="max-h-[26rem]">
+      <div className="max-h-[26rem] overflow-y-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -512,7 +512,7 @@ function DueTable({ data }: { data: ClientDue }) {
           </TableRow>
         </TableFooter>
       </Table>
-      </ScrollArea>
+      </div>
       <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
     </div>
   );

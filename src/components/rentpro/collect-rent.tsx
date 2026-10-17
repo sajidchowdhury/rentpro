@@ -291,7 +291,7 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="max-h-[26rem]">
+            <div className="max-h-[26rem] overflow-y-auto">
               <div className="divide-y">
                 {loadingTenants ? (
                   [0, 1, 2, 3].map((i) => (
@@ -325,7 +325,7 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
                   </button>
                 ))}
               </div>
-            </ScrollArea>
+            </div>
             <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
           </CardContent>
         </Card>
@@ -374,7 +374,7 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
                 </div>
 
                 {/* Due rows */}
-                <ScrollArea className="max-h-[24rem]">
+                <div className="max-h-[24rem] overflow-y-auto">
                   <div className="divide-y">
                     {duePaged.pageItems.length === 0 ? (
                       <div className="p-8 text-center text-sm text-muted-foreground">
@@ -409,14 +409,14 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
                       </div>
                     ))}
                   </div>
-                </ScrollArea>
+                </div>
                 <Pager page={duePaged.page} totalPages={duePaged.totalPages} total={duePaged.total} pageSize={duePaged.pageSize} onPrev={duePaged.prev} onNext={duePaged.next} />
 
                 {/* Recent collections */}
                 {ledger.recentCollections.length > 0 && (
                   <div className="border-t">
                     <div className="px-4 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">Recent payments</div>
-                    <ScrollArea className="max-h-40">
+                    <div className="max-h-40 overflow-y-auto">
                       <div className="divide-y">
                         {ledger.recentCollections.map((c) => (
                           <div key={c.id} className="px-4 py-2 flex items-center gap-3 text-sm">
@@ -427,7 +427,7 @@ export function CollectRentView({ month, year, initialTenantId }: { month: strin
                           </div>
                         ))}
                       </div>
-                    </ScrollArea>
+                    </div>
                   </div>
                 )}
               </div>

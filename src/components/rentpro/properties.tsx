@@ -249,7 +249,7 @@ export function PropertiesView() {
             <CardDescription>{properties.length} properties</CardDescription>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="h-[32rem]">
+            <div className="h-[32rem] overflow-y-auto">
               <div className="divide-y">
                 {loadingList ? (
                   [0, 1, 2].map((i) => <div key={i} className="p-3"><Skeleton className="h-16 rounded" /></div>)
@@ -284,7 +284,7 @@ export function PropertiesView() {
                   </button>
                 ))}
               </div>
-            </ScrollArea>
+            </div>
           </CardContent>
         </Card>
 
@@ -327,7 +327,7 @@ export function PropertiesView() {
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
-                    <ScrollArea className="max-h-[26rem]">
+                    <div className="max-h-[26rem] overflow-y-auto">
                       <Table>
                         <TableHeader>
                           <TableRow>
@@ -358,7 +358,7 @@ export function PropertiesView() {
                         ))}
                       </TableBody>
                     </Table>
-                  </ScrollArea>
+                  </div>
                   <Pager page={unitsPaged.page} totalPages={unitsPaged.totalPages} total={unitsPaged.total} pageSize={unitsPaged.pageSize} onPrev={unitsPaged.prev} onNext={unitsPaged.next} />
                   </div>
                 )}

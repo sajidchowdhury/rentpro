@@ -232,7 +232,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
           <CardDescription>Recurring expenses not yet recorded this month, with their missing months</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollArea className="max-h-[24rem]">
+          <div className="max-h-[24rem] overflow-y-auto">
             <div className="divide-y">
               {duePaged.pageItems.length === 0 ? (
                 <div className="p-8 text-center text-sm text-muted-foreground">
@@ -277,7 +277,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
                 </div>
               ))}
             </div>
-          </ScrollArea>
+          </div>
           <Pager page={duePaged.page} totalPages={duePaged.totalPages} total={duePaged.total} pageSize={duePaged.pageSize} onPrev={duePaged.prev} onNext={duePaged.next} />
         </CardContent>
       </Card>
@@ -292,7 +292,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="max-h-64">
+            <div className="max-h-64 overflow-y-auto">
               <div className="divide-y">
                 {recordedTypes.map((t) => (
                   <div key={t.headId} className="px-4 py-3 flex items-center gap-3 hover:bg-muted/40">
@@ -308,7 +308,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
                   </div>
                 ))}
               </div>
-            </ScrollArea>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -320,7 +320,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
           <CardDescription>Recent history per type (last 6 months)</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollArea className="max-h-96">
+          <div className="max-h-96 overflow-y-auto">
             <div className="divide-y">
               {typesPaged.pageItems.length === 0 ? (
                 <div className="p-8 text-center text-sm text-muted-foreground">No expense records yet.</div>
@@ -368,7 +368,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
                 </div>
               ))}
             </div>
-          </ScrollArea>
+          </div>
           <Pager page={typesPaged.page} totalPages={typesPaged.totalPages} total={typesPaged.total} pageSize={typesPaged.pageSize} onPrev={typesPaged.prev} onNext={typesPaged.next} />
         </CardContent>
       </Card>

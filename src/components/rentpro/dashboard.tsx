@@ -235,7 +235,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
             <CardDescription>{dueLeases.length} pending · sorted by months missed</CardDescription>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="max-h-[20rem]">
+            <div className="max-h-[20rem] overflow-y-auto">
               <div className="divide-y">
                 {duePaged.pageItems.length === 0 ? (
                   <div className="p-6 text-sm text-muted-foreground text-center">
@@ -264,7 +264,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
                   </div>
                 ))}
               </div>
-            </ScrollArea>
+            </div>
             <Pager page={duePaged.page} totalPages={duePaged.totalPages} total={duePaged.total} pageSize={duePaged.pageSize} onPrev={duePaged.prev} onNext={duePaged.next} />
           </CardContent>
         </Card>
@@ -278,7 +278,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
             <CardDescription>Re-rentable — not covered by any lease in {month} {year}</CardDescription>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="h-80">
+            <div className="h-80 overflow-y-auto">
               <div className="divide-y">
                 {vacantUnits.length === 0 ? (
                   <div className="p-6 text-sm text-muted-foreground text-center">No vacant units.</div>
@@ -295,7 +295,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
                   </div>
                 ))}
               </div>
-            </ScrollArea>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -310,7 +310,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
           <CardDescription>Latest rent payments across all properties</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollArea className="h-72">
+          <div className="h-72 overflow-y-auto">
             <div className="divide-y">
               {recentCollections.map((c) => (
                 <div key={c.id} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/40">
@@ -333,7 +333,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
                 </div>
               ))}
             </div>
-          </ScrollArea>
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -166,7 +166,7 @@ export function PlatformView({
           {loading ? (
             <div className="p-4"><Skeleton className="h-48 rounded" /></div>
           ) : (
-            <ScrollArea className="max-h-[28rem]">
+            <div className="max-h-[28rem] overflow-y-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -217,7 +217,7 @@ export function PlatformView({
                   ))}
                 </TableBody>
               </Table>
-            </ScrollArea>
+            </div>
           )}
         </CardContent>
       </Card>

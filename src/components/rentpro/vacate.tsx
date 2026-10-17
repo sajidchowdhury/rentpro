@@ -257,7 +257,7 @@ export function VacateView({ month, year }: { month: string; year: string }) {
             />
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="max-h-[28rem]">
+            <div className="max-h-[28rem] overflow-y-auto">
               <div className="divide-y">
                 {loadingLeases ? (
                   [0, 1, 2, 3].map((i) => <div key={i} className="p-3"><Skeleton className="h-14 rounded" /></div>)
@@ -291,7 +291,7 @@ export function VacateView({ month, year }: { month: string; year: string }) {
                   </button>
                 ))}
               </div>
-            </ScrollArea>
+            </div>
             <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
           </CardContent>
         </Card>
@@ -362,7 +362,7 @@ export function VacateView({ month, year }: { month: string; year: string }) {
                       {preview.outstandingMonths.length === 0 ? (
                         <div className="text-sm text-emerald-600 dark:text-emerald-400 flex items-center gap-2"><CheckCircle2 className="size-4" /> No outstanding months — fully paid up to {shortDate(preview.vacateDate)}.</div>
                       ) : (
-                        <ScrollArea className="max-h-64">
+                        <div className="max-h-64 overflow-y-auto">
                           <Table>
                             <TableHeader>
                               <TableRow>
@@ -383,7 +383,7 @@ export function VacateView({ month, year }: { month: string; year: string }) {
                               ))}
                             </TableBody>
                           </Table>
-                        </ScrollArea>
+                        </div>
                       )}
                       <div className="grid grid-cols-3 gap-3 text-sm">
                         <div className="rounded-md bg-muted/60 p-3"><div className="text-xs text-muted-foreground">Rent due</div><div className="font-semibold">{money(preview.outstandingRentTotal)}</div></div>

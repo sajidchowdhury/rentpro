@@ -123,7 +123,7 @@ export function TenantsView({
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollArea className="max-h-[30rem]">
+            <div className="max-h-[30rem] overflow-y-auto">
               <div className="divide-y">
                 {loadingList ? (
                   [0, 1, 2, 3, 4].map((i) => <div key={i} className="p-3"><Skeleton className="h-14 rounded" /></div>)
@@ -159,7 +159,7 @@ export function TenantsView({
                   </button>
                 ))}
               </div>
-            </ScrollArea>
+            </div>
             <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
           </CardContent>
         </Card>
@@ -233,7 +233,7 @@ export function TenantsView({
                     <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1">
                       <Receipt className="size-3" /> Unpaid months
                     </div>
-                    <ScrollArea className="max-h-48">
+                    <div className="max-h-48 overflow-y-auto">
                       <div className="space-y-1.5">
                         {dueRowsPaged.pageItems.map((r) => (
                           <div key={`${r.leaseId}-${r.month}-${r.year}`} className="flex items-center gap-2 text-xs">
@@ -243,7 +243,7 @@ export function TenantsView({
                           </div>
                         ))}
                       </div>
-                    </ScrollArea>
+                    </div>
                     <Pager page={dueRowsPaged.page} totalPages={dueRowsPaged.totalPages} total={dueRowsPaged.total} pageSize={dueRowsPaged.pageSize} onPrev={dueRowsPaged.prev} onNext={dueRowsPaged.next} />
                   </div>
                 )}
@@ -252,7 +252,7 @@ export function TenantsView({
                 {ledger.recentCollections.length > 0 && (
                   <div className="px-4 py-3">
                     <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Recent payments</div>
-                    <ScrollArea className="max-h-40">
+                    <div className="max-h-40 overflow-y-auto">
                       <div className="divide-y">
                         {ledger.recentCollections.map((c) => (
                           <div key={c.id} className="py-2 flex items-center gap-3 text-sm">
@@ -263,7 +263,7 @@ export function TenantsView({
                           </div>
                         ))}
                       </div>
-                    </ScrollArea>
+                    </div>
                   </div>
                 )}
               </div>
