@@ -145,7 +145,6 @@ export function GenerateRentView({
         </CardHeader>
         <CardContent className="p-0">
           <ScrollArea className="max-h-[28rem]">
-          <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -194,19 +193,10 @@ export function GenerateRentView({
                 })}
               </TableBody>
             </Table>
-          </div>
           </ScrollArea>
           <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
         </CardContent>
       </Card>
-
-      <p className="text-xs text-muted-foreground">
-        💡 In the production build, &quot;Generate&quot; inserts idempotent{" "}
-        <code className="px-1 py-0.5 rounded bg-muted">rent_schedule</code> rows (one per active lease)
-        into Postgres, guarded by a unique constraint on{" "}
-        <code className="px-1 py-0.5 rounded bg-muted">(leaseId, month, year)</code> — so re-running
-        never creates duplicates. Here it&apos;s simulated in-memory from your real data.
-      </p>
     </div>
   );
 }

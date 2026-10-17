@@ -422,14 +422,18 @@ export default function RentProPage() {
         </main>
       </div>
 
-      {/* Sticky footer */}
-      <footer className="border-t bg-background">
-        <div className="px-4 md:px-6 py-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+      {/* Footer */}
+      <footer className="border-t bg-background mt-auto">
+        <div className="px-4 md:px-6 py-4 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
-            <TrendingUp className="size-3.5" />
-            <span>RentPro prototype — powered by your real <span className="font-medium text-foreground">osudlagb_home_rent</span> data (3,651 rows, parsed in-memory).</span>
+            <Database className="size-3.5" />
+            <span>
+              {dataSource === "real" ? "Real data" : "Demo data"} ·{" "}
+              {activeOrg?.name ?? "RentPro"}
+              {ownsData ? " (owner org)" : ""}
+            </span>
           </div>
-          <div>Multi-tenant SaaS ready · Next.js 16 + Prisma + Postgres</div>
+          <div>RentPro · Next.js 16 + Prisma + PostgreSQL</div>
         </div>
       </footer>
     </div>
