@@ -184,10 +184,19 @@ async function migrateOrganization(ctx: TransformContext) {
 
 // ---- menus (global, not per-org) ----
 async function migrateMenus(ctx: TransformContext) {
-  const rows = rowsOf(ctx.parsed, "menu_list");
+  const allRows = rowsOf(ctx.parsed, "menu_list");
+  // Sort so root menus (parent_id = 0 or null) come first — avoids FK
+  // violations where a child references a parent that hasn't been inserted.
+  const rows = [...allRows].sort((a, b) => {
+    const aRoot = !num(a.parent_id) ? 0 : 1;
+    const bRoot = !num(b.parent_id) ? 0 : 1;
+    return aRoot - bRoot || num(a.id) - num(b.id);
+  });
   for (const r of rows) {
     const mid = id("menu", r.id);
     if (!mid) continue;
+    // parent_id = 0 means root menu (no parent) — don't reference a non-existent menu_0
+    const pid = num(r.parent_id) > 0 ? id("menu", r.parent_id) : null;
     await ctx.prisma.menu.upsert({
       where: { id: mid },
       create: {
@@ -197,7 +206,7 @@ async function migrateMenus(ctx: TransformContext) {
         link: strOrNull(r.menu_link),
         section: strOrNull(r.section),
         type: "MODULE",
-        parentId: id("menu", r.parent_id),
+        parentId: pid,
         sort: num(r.sort),
         icon: strOrNull(r.icon),
       },
