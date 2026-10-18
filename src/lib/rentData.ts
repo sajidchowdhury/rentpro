@@ -76,6 +76,22 @@ export interface Collection {
   receiveDate: Date | null;
   status: "PENDING" | "DONE";
 }
+// How a payment physically moved — drives the cash vs bank split in the
+// Day Book report (mirrors legacy `account_transection.transection_by`).
+export type PaymentMethod = "CASH" | "BANK" | "MOBILE_BANK";
+
+// Normalizes the legacy free-text `transection_by` value into one of our
+// PaymentMethod buckets. Anything we don't recognize defaults to CASH.
+export function normalizeMethod(raw: string | null | undefined): PaymentMethod {
+  const v = (raw ?? "").trim().toLowerCase();
+  if (!v) return "CASH";
+  if (v === "cash") return "CASH";
+  if (v === "bank") return "BANK";
+  if (v.startsWith("mobile") || v.includes("bkash") || v.includes("nagad") || v.includes("rocket")) {
+    return "MOBILE_BANK";
+  }
+  return "CASH";
+}
 export interface Txn {
   id: number;
   inAmount: number;
@@ -85,6 +101,10 @@ export interface Txn {
   type: "INCOME" | "EXPENSE" | "TRANSFER" | "ADJUSTMENT";
   accountHeadId: number | null;
   accountHeadName: string;
+  // Cash vs Bank — every rent collection / expense / transfer moves money
+  // out of (or into) either the cash box or a bank account. This is what lets
+  // the Day Book show a separate Cash-in-hand and Bank balance.
+  method: PaymentMethod;
 }
 
 export interface AccountHead {
@@ -387,6 +407,7 @@ function loadDataset(): Dataset {
         accountHeadId: ahId,
         accountHeadName: headName(ahId),
         type: headType(ahId),
+        method: normalizeMethod(str(r.transection_by)),
       } as Txn;
     })
     .filter((t) => t.id);
@@ -491,13 +512,13 @@ function seedDemoDataset(): Dataset {
   const txns: Txn[] = [];
   let tid = 1;
   for (const c of collections) {
-    txns.push({ id: tid++, inAmount: c.rent, outAmount: 0, transectionDate: c.receiveDate, note: `Rent — ${c.rentMonth} ${c.rentYear}`, type: "INCOME", accountHeadId: 1, accountHeadName: "RENT COLLECTION" });
+    txns.push({ id: tid++, inAmount: c.rent, outAmount: 0, transectionDate: c.receiveDate, note: `Rent — ${c.rentMonth} ${c.rentYear}`, type: "INCOME", accountHeadId: 1, accountHeadName: "RENT COLLECTION", method: "CASH" });
   }
   for (let off = 2; off >= 0; off--) {
     const k = nowKey - off;
     const d = new Date(Math.floor(k / 12), (k % 12), 12);
-    txns.push({ id: tid++, inAmount: 0, outAmount: 2200, transectionDate: d, note: `Electricity — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 2, accountHeadName: "ELECTRICITY BILL" });
-    txns.push({ id: tid++, inAmount: 0, outAmount: 800, transectionDate: d, note: `Gas — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 3, accountHeadName: "GAS BILL" });
+    txns.push({ id: tid++, inAmount: 0, outAmount: 2200, transectionDate: d, note: `Electricity — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 2, accountHeadName: "ELECTRICITY BILL", method: "CASH" });
+    txns.push({ id: tid++, inAmount: 0, outAmount: 800, transectionDate: d, note: `Gas — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 3, accountHeadName: "GAS BILL", method: "CASH" });
   }
 
   // demo users — reuse the documented password "101010Sajid"
@@ -1282,6 +1303,7 @@ export function collectRent(p: CollectPayload): {
         transectionDate: receive,
         note: `Rent collection — ${tenant.name} — ${p.month} ${p.year}`,
         type: "INCOME",
+        method: p.method === "BANK" ? "BANK" : p.method === "MOBILE_BANK" ? "MOBILE_BANK" : "CASH",
       });
     }
   }
@@ -1499,6 +1521,7 @@ export interface RecordExpensePayload {
   amount: number;
   date: string; // ISO recorded date
   note: string;
+  method?: PaymentMethod;
 }
 
 export function recordExpense(
@@ -1536,6 +1559,7 @@ export function recordExpense(
     type: "EXPENSE",
     accountHeadId: head.id,
     accountHeadName: head.name,
+    method: p.method ?? "CASH",
   });
 
   return { ok: true };
@@ -1843,6 +1867,7 @@ export function settleLease(
       type: "ADJUSTMENT",
       accountHeadId: null,
       accountHeadName: "ADVANCE ADJUSTMENT",
+      method: "CASH",
     });
   }
   // 2) advance refunded to tenant (cash out)
@@ -1860,6 +1885,7 @@ export function settleLease(
       type: "EXPENSE",
       accountHeadId: null,
       accountHeadName: "CLIENT ADVANCE",
+      method: "CASH",
     });
   }
   // 3) tenant pays the remaining outstanding (cash in)
@@ -1873,6 +1899,7 @@ export function settleLease(
       type: "INCOME",
       accountHeadId: null,
       accountHeadName: "RENT COLLECTION",
+      method: "CASH",
     });
   }
 
@@ -2088,6 +2115,7 @@ export interface DayBookRow {
   date: string;
   particulars: string;
   head: string;
+  method: PaymentMethod;
   income: number;
   expense: number;
   balance: number;
@@ -2096,11 +2124,24 @@ export interface DayBookReport {
   fromDate: string;
   toDate: string;
   opening: number;
+  // Opening balance split by where the money sits — Bank (account) vs
+  // Cash-in-hand. Mirrors the legacy Day Book "Opening Balance" card.
+  openingCash: number;
+  openingBank: number;
   rows: DayBookRow[];
   totalIncome: number;
   totalExpense: number;
+  // Movement during the period, by method. cashIn + bankIn = totalIncome;
+  // cashOut + bankOut = totalExpense.
+  cashIn: number;
+  cashOut: number;
+  bankIn: number;
+  bankOut: number;
   net: number;
   closing: number;
+  // Closing balance split — opening ± the period's movement for each pot.
+  closingCash: number;
+  closingBank: number;
 }
 
 function dateOnly(d: Date | null): string | null {
@@ -2116,22 +2157,33 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
   const inRange = (d: Date | null) => d !== null && d >= from && d <= to;
   const beforeRange = (d: Date | null) => d !== null && d < from;
 
-  const opening =
-    ds.txns
-      .filter((t) => beforeRange(t.transectionDate))
-      .reduce((s, t) => s + t.inAmount - t.outAmount, 0);
+  const isBank = (m: PaymentMethod) => m === "BANK" || m === "MOBILE_BANK";
+  const netOf = (t: Txn) => t.inAmount - t.outAmount;
 
-  const rows: DayBookRow[] = ds.txns
+  // --- Opening balance: sum every txn before `from`, split by method ---
+  const openingTxns = ds.txns.filter((t) => beforeRange(t.transectionDate));
+  const openingCash = openingTxns
+    .filter((t) => !isBank(t.method))
+    .reduce((s, t) => s + netOf(t), 0);
+  const openingBank = openingTxns
+    .filter((t) => isBank(t.method))
+    .reduce((s, t) => s + netOf(t), 0);
+  const opening = openingCash + openingBank;
+
+  // --- In-range rows (sorted) + per-method movement totals ---
+  const rangeTxns = ds.txns
     .filter((t) => inRange(t.transectionDate))
-    .sort((a, b) => (a.transectionDate!.getTime() - b.transectionDate!.getTime()))
-    .map((t) => ({
-      date: dateOnly(t.transectionDate)!,
-      particulars: t.note ?? "",
-      head: t.accountHeadName || (t.inAmount > 0 ? "Income" : "Expense"),
-      income: t.inAmount,
-      expense: t.outAmount,
-      balance: 0,
-    }));
+    .sort((a, b) => (a.transectionDate!.getTime() - b.transectionDate!.getTime()));
+
+  const rows: DayBookRow[] = rangeTxns.map((t) => ({
+    date: dateOnly(t.transectionDate)!,
+    particulars: t.note ?? "",
+    head: t.accountHeadName || (t.inAmount > 0 ? "Income" : "Expense"),
+    method: t.method,
+    income: t.inAmount,
+    expense: t.outAmount,
+    balance: 0,
+  }));
 
   let running = opening;
   for (const r of rows) {
@@ -2141,15 +2193,36 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
 
   const totalIncome = rows.reduce((s, r) => s + r.income, 0);
   const totalExpense = rows.reduce((s, r) => s + r.expense, 0);
+
+  // movement by pot
+  const cashTxns = rangeTxns.filter((t) => !isBank(t.method));
+  const bankTxns = rangeTxns.filter((t) => isBank(t.method));
+  const cashIn = cashTxns.reduce((s, t) => s + t.inAmount, 0);
+  const cashOut = cashTxns.reduce((s, t) => s + t.outAmount, 0);
+  const bankIn = bankTxns.reduce((s, t) => s + t.inAmount, 0);
+  const bankOut = bankTxns.reduce((s, t) => s + t.outAmount, 0);
+
+  const closingCash = openingCash + cashIn - cashOut;
+  const closingBank = openingBank + bankIn - bankOut;
+  const closing = closingCash + closingBank;
+
   return {
     fromDate: dateOnly(from)!,
     toDate: dateOnly(to)!,
     opening,
+    openingCash,
+    openingBank,
     rows,
     totalIncome,
     totalExpense,
+    cashIn,
+    cashOut,
+    bankIn,
+    bankOut,
     net: totalIncome - totalExpense,
-    closing: running,
+    closing,
+    closingCash,
+    closingBank,
   };
 }
 

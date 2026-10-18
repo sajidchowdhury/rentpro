@@ -19,6 +19,7 @@ export async function POST(request: Request) {
       amount: Number(it.amount ?? 0),
       date: it.date ?? new Date().toISOString(),
       note: String(it.note ?? ""),
+      method: it.method === "BANK" ? "BANK" : it.method === "MOBILE_BANK" ? "MOBILE_BANK" : "CASH",
     }))
   );
   if (!result.ok) {

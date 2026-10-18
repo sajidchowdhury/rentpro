@@ -27,8 +27,15 @@ import { toast } from "sonner";
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 // types
-interface DayBookRow { date: string; particulars: string; head: string; income: number; expense: number; balance: number; }
-interface DayBook { fromDate: string; toDate: string; opening: number; rows: DayBookRow[]; totalIncome: number; totalExpense: number; net: number; closing: number; }
+interface DayBookRow { date: string; particulars: string; head: string; method: "CASH" | "BANK" | "MOBILE_BANK"; income: number; expense: number; balance: number; }
+interface DayBook {
+  fromDate: string; toDate: string;
+  opening: number; openingCash: number; openingBank: number;
+  rows: DayBookRow[];
+  totalIncome: number; totalExpense: number;
+  cashIn: number; cashOut: number; bankIn: number; bankOut: number;
+  net: number; closing: number; closingCash: number; closingBank: number;
+}
 interface YearlyMonth { month: string; rentCollected: number; income: number; expense: number; net: number; }
 interface Yearly { year: string; months: YearlyMonth[]; totalRentCollected: number; totalIncome: number; totalExpense: number; totalNet: number; }
 interface AccHeadRow { headId: number | null; head: string; type: string; income: number; expense: number; net: number; count: number; }
@@ -321,24 +328,80 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
 
 // --- tables ---
 
+function MethodBadge({ method }: { method: DayBookRow["method"] }) {
+  if (method === "BANK") {
+    return <Badge className="bg-sky-100 text-sky-700 hover:bg-sky-100 text-[10px]">Bank</Badge>;
+  }
+  if (method === "MOBILE_BANK") {
+    return <Badge className="bg-violet-100 text-violet-700 hover:bg-violet-100 text-[10px]">Mobile</Badge>;
+  }
+  return <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700">Cash</Badge>;
+}
+
+/** The opening / closing balance card — mirrors the legacy Day Book layout:
+ *  Total | Bank Accounts | Cash in Hand. */
+function BalanceSplitCard({
+  title, total, bank, cash,
+}: { title: string; total: number; bank: number; cash: number }) {
+  return (
+    <div className="rounded-lg border bg-muted/30 p-3 min-w-[15rem]">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{title}</span>
+        <span className="text-base font-bold tabular-nums">{money(total)}</span>
+      </div>
+      <Separator className="my-2" />
+      <div className="flex items-center justify-between text-xs">
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          <span className="size-2 rounded-full bg-sky-500" /> Bank Accounts
+        </span>
+        <span className="font-medium tabular-nums text-sky-700 dark:text-sky-300">{money(bank)}</span>
+      </div>
+      <div className="flex items-center justify-between text-xs mt-1">
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          <span className="size-2 rounded-full bg-amber-500" /> Cash in Hand
+        </span>
+        <span className="font-medium tabular-nums text-amber-700 dark:text-amber-300">{money(cash)}</span>
+      </div>
+    </div>
+  );
+}
+
 function DayBookTable({ data }: { data: DayBook }) {
   return (
+    <div className="space-y-4">
+      {/* Opening + closing balance split cards */}
+      <div className="flex flex-wrap gap-3">
+        <BalanceSplitCard title="Opening Balance" total={data.opening} bank={data.openingBank} cash={data.openingCash} />
+        <BalanceSplitCard title="Closing Balance" total={data.closing} bank={data.closingBank} cash={data.closingCash} />
+        {/* period movement summary */}
+        <div className="rounded-lg border p-3 flex-1 min-w-[20rem]">
+          <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Period Movement</div>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+            <div className="flex justify-between"><span className="flex items-center gap-1.5 text-muted-foreground"><span className="size-2 rounded-full bg-emerald-500" /> Cash received</span><span className="font-medium tabular-nums text-emerald-600 dark:text-emerald-400">{money(data.cashIn)}</span></div>
+            <div className="flex justify-between"><span className="flex items-center gap-1.5 text-muted-foreground"><span className="size-2 rounded-full bg-rose-500" /> Cash paid</span><span className="font-medium tabular-nums text-rose-600 dark:text-rose-400">{money(data.cashOut)}</span></div>
+            <div className="flex justify-between"><span className="flex items-center gap-1.5 text-muted-foreground"><span className="size-2 rounded-full bg-emerald-500" /> Bank received</span><span className="font-medium tabular-nums text-emerald-600 dark:text-emerald-400">{money(data.bankIn)}</span></div>
+            <div className="flex justify-between"><span className="flex items-center gap-1.5 text-muted-foreground"><span className="size-2 rounded-full bg-rose-500" /> Bank paid</span><span className="font-medium tabular-nums text-rose-600 dark:text-rose-400">{money(data.bankOut)}</span></div>
+          </div>
+        </div>
+      </div>
+
     <div className="overflow-x-auto">
     <div className="max-h-[28rem] overflow-y-auto">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Date</TableHead><TableHead>Particulars</TableHead><TableHead>Head</TableHead>
+            <TableHead>Date</TableHead><TableHead>Particulars</TableHead><TableHead>Head</TableHead><TableHead className="text-center">Method</TableHead>
             <TableHead className="text-right">Income</TableHead><TableHead className="text-right">Expense</TableHead><TableHead className="text-right">Balance</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          <TableRow className="bg-muted/40"><TableCell colSpan={5} className="font-medium">Opening balance</TableCell><TableCell className="text-right font-medium">{money(data.opening)}</TableCell></TableRow>
+          <TableRow className="bg-muted/40"><TableCell colSpan={6} className="font-medium">Opening balance</TableCell><TableCell className="text-right font-medium">{money(data.opening)}</TableCell></TableRow>
           {data.rows.map((r, i) => (
             <TableRow key={i}>
               <TableCell className="whitespace-nowrap">{shortDate(r.date)}</TableCell>
               <TableCell className="max-w-[20rem] truncate">{r.particulars || "—"}</TableCell>
               <TableCell className="text-muted-foreground text-xs">{r.head}</TableCell>
+              <TableCell className="text-center"><MethodBadge method={r.method} /></TableCell>
               <TableCell className="text-right text-emerald-600 dark:text-emerald-400">{r.income ? money(r.income) : "—"}</TableCell>
               <TableCell className="text-right text-rose-600 dark:text-rose-400">{r.expense ? money(r.expense) : "—"}</TableCell>
               <TableCell className="text-right font-medium tabular-nums">{money(r.balance)}</TableCell>
@@ -347,13 +410,14 @@ function DayBookTable({ data }: { data: DayBook }) {
         </TableBody>
         <TableFooter>
           <TableRow>
-            <TableCell colSpan={3}>Totals</TableCell>
+            <TableCell colSpan={4}>Totals</TableCell>
             <TableCell className="text-right text-emerald-600 dark:text-emerald-400">{money(data.totalIncome)}</TableCell>
             <TableCell className="text-right text-rose-600 dark:text-rose-400">{money(data.totalExpense)}</TableCell>
             <TableCell className="text-right">Net {money(data.net)}</TableCell>
           </TableRow>
         </TableFooter>
       </Table>
+    </div>
     </div>
     </div>
   );
@@ -521,11 +585,19 @@ function DueTable({ data }: { data: ClientDue }) {
 // --- printable HTML builders ---
 
 function dayBookHTML(d: DayBook): string {
-  const rows = d.rows.map((r) => `<tr><td>${shortDate(r.date)}</td><td>${r.particulars || ""}</td><td>${r.head}</td><td class="r">${r.income ? money(r.income) : ""}</td><td class="r">${r.expense ? money(r.expense) : ""}</td><td class="r">${money(r.balance)}</td></tr>`).join("");
-  return `<div class="muted">${shortDate(d.fromDate)} → ${shortDate(d.toDate)} · Opening: ${money(d.opening)}</div>
-    <table><thead><tr><th>Date</th><th>Particulars</th><th>Head</th><th class="r">Income</th><th class="r">Expense</th><th class="r">Balance</th></tr></thead>
+  const rows = d.rows.map((r) => {
+    const m = r.method === "BANK" ? "Bank" : r.method === "MOBILE_BANK" ? "Mobile" : "Cash";
+    return `<tr><td>${shortDate(r.date)}</td><td>${r.particulars || ""}</td><td>${r.head}</td><td>${m}</td><td class="r">${r.income ? money(r.income) : ""}</td><td class="r">${r.expense ? money(r.expense) : ""}</td><td class="r">${money(r.balance)}</td></tr>`;
+  }).join("");
+  return `<div class="muted">${shortDate(d.fromDate)} → ${shortDate(d.toDate)}</div>
+    <table class="compact"><tbody>
+      <tr><th colspan=2>Opening Balance</th><th class="r">${money(d.opening)}</th><td>Bank ${money(d.openingBank)} · Cash ${money(d.openingCash)}</td></tr>
+      <tr><th colspan=2>Closing Balance</th><th class="r">${money(d.closing)}</th><td>Bank ${money(d.closingBank)} · Cash ${money(d.closingCash)}</td></tr>
+      <tr><td colspan=4>Movement — Cash in ${money(d.cashIn)} / out ${money(d.cashOut)} · Bank in ${money(d.bankIn)} / out ${money(d.bankOut)}</td></tr>
+    </tbody></table>
+    <table><thead><tr><th>Date</th><th>Particulars</th><th>Head</th><th>Method</th><th class="r">Income</th><th class="r">Expense</th><th class="r">Balance</th></tr></thead>
     <tbody>${rows}</tbody>
-    <tfoot><tr><td colspan=3>Totals</td><td class="r">${money(d.totalIncome)}</td><td class="r">${money(d.totalExpense)}</td><td class="r">Net ${money(d.net)}</td></tr></tfoot></table>`;
+    <tfoot><tr><td colspan=4>Totals</td><td class="r">${money(d.totalIncome)}</td><td class="r">${money(d.totalExpense)}</td><td class="r">Net ${money(d.net)}</td></tr></tfoot></table>`;
 }
 
 function yearlyHTML(d: Yearly): string {

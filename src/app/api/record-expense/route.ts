@@ -17,6 +17,7 @@ export async function POST(request: Request) {
     amount: Number(body.amount ?? 0),
     date: body.date ?? new Date().toISOString(),
     note: String(body.note ?? ""),
+    method: body.method === "BANK" ? "BANK" : body.method === "MOBILE_BANK" ? "MOBILE_BANK" : "CASH",
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 400 });

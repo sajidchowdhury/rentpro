@@ -64,6 +64,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
   const [dAmount, setDAmount] = useState(0);
   const [dDate, setDDate] = useState(todayLocal());
   const [dNote, setDNote] = useState("");
+  const [dMethod, setDMethod] = useState<"CASH" | "BANK" | "MOBILE_BANK">("CASH");
   const [submitting, setSubmitting] = useState(false);
   const [batchMissing, setBatchMissing] = useState<{ month: string; year: string }[]>([]);
 
@@ -93,6 +94,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
     setDAmount(t.predictedAmount || t.lastRecorded?.amount || 0);
     setDDate(todayLocal());
     setDNote("");
+    setDMethod("CASH");
     setBatchMissing(t.missingMonths);
     setOpen(true);
   }
@@ -101,6 +103,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
     setDHeadId(heads[0]?.id ?? null);
     setDMonth(month); setDYear(year);
     setDAmount(0); setDDate(todayLocal()); setDNote("");
+    setDMethod("CASH");
     setBatchMissing([]);
     setOpen(true);
   }
@@ -117,7 +120,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
           body: JSON.stringify({
             items: batchMissing.map((m) => ({
               accountHeadId: dHeadId, month: m.month, year: m.year,
-              amount: dAmount, date: dDate, note: dNote || `Back-filled ${dAmount}`,
+              amount: dAmount, date: dDate, note: dNote || `Back-filled ${dAmount}`, method: dMethod,
             })),
           }),
         });
@@ -130,7 +133,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             accountHeadId: dHeadId, month: dMonth, year: dYear,
-            amount: dAmount, date: dDate, note: dNote,
+            amount: dAmount, date: dDate, note: dNote, method: dMethod,
           }),
         });
         const d = await r.json();
@@ -420,14 +423,27 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
                 <Input type="number" value={dAmount} onChange={(e) => setDAmount(Number(e.target.value))} />
               </div>
               <div>
-                <Label className="text-xs">Recorded Date</Label>
-                <Input type="date" value={dDate} onChange={(e) => setDDate(e.target.value)} />
+                <Label className="text-xs">Paid by</Label>
+                <Select value={dMethod} onValueChange={(v) => setDMethod(v as "CASH" | "BANK" | "MOBILE_BANK")}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="CASH">Cash</SelectItem>
+                    <SelectItem value="BANK">Bank</SelectItem>
+                    <SelectItem value="MOBILE_BANK">Mobile Banking</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
-            <div>
-              <Label className="text-xs">Note</Label>
-              <Input value={dNote} onChange={(e) => setDNote(e.target.value)} placeholder="optional" />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Recorded Date</Label>
+                <Input type="date" value={dDate} onChange={(e) => setDDate(e.target.value)} />
+              </div>
+              <div>
+                <Label className="text-xs">Note</Label>
+                <Input value={dNote} onChange={(e) => setDNote(e.target.value)} placeholder="optional" />
+              </div>
             </div>
 
             {batchMissing.length > 1 && (
