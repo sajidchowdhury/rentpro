@@ -598,6 +598,60 @@ async function migrateCollections(ctx: TransformContext) {
   }
 }
 
+// ---- menu permissions ----
+async function migrateMenuPermissions(ctx: TransformContext) {
+  for (const r of rowsOf(ctx.parsed, "menu_permission")) {
+    const mid = id("menuperm", r.id);
+    if (!mid) continue;
+    const userId = id("user", r.employee_id);
+    const menuId = id("menu", r.menu_id);
+    if (!userId || !menuId) {
+      ctx.warnings.push(`menu_permission ${r.id}: missing user/menu FK, skipped`);
+      continue;
+    }
+    await ctx.prisma.menuPermission.upsert({
+      where: { id: mid },
+      create: {
+        id: mid,
+        roleId: null, // legacy has per-user permissions, not per-role; store null
+        menuId,
+        canView: r.view_check === "Checked" || r.view_check === "YES",
+        canEdit: r.edit_check === "YES" || r.edit_check === "Checked",
+      },
+      update: {},
+    });
+    ctx.stats.menuPermission++;
+  }
+}
+
+// ---- push subscriptions (webpush_member) ----
+async function migratePushSubscriptions(ctx: TransformContext) {
+  for (const r of rowsOf(ctx.parsed, "webpush_member")) {
+    const memberId = num(r.member_id);
+    if (!memberId) continue;
+    const psid = `push_${memberId}`;
+    const userId = id("user", r.member_id);
+    await ctx.prisma.pushSubscription.upsert({
+      where: { id: psid },
+      create: {
+        id: psid,
+        organizationId: ORG_ID,
+        userId: userId ?? "user_owner",
+        endpoint: strOrNull(r.endpoint) ?? "",
+        expirationTime: r.expirationTime === null ? null : Number(r.expirationTime),
+        p256dh: strOrNull(r.p256dh),
+        authKey: strOrNull(r.authKey),
+        isActive: num(r.flag) === 1,
+        lastDate: dt(r.last_date),
+        lastTime: strOrNull(r.last_time),
+        ip: strOrNull(r.ip),
+      },
+      update: {},
+    });
+    ctx.stats.pushSubscription++;
+  }
+}
+
 // ---- lease history (archive) ----
 async function migrateLeaseHistory(ctx: TransformContext) {
   for (const r of rowsOf(ctx.parsed, "setup_rent_history")) {
@@ -644,6 +698,8 @@ async function dbReconciliation(ctx: TransformContext) {
     ["transactions", await count("transaction"), "account_transection"],
     ["rent_collections", await count("rentCollection"), "collect_rent"],
     ["lease_histories", await count("leaseHistory"), "setup_rent_history"],
+    ["menu_permissions", await count("menuPermission"), "menu_permission"],
+    ["push_subscriptions", await count("pushSubscription"), "webpush_member"],
   ];
   console.log("NEW TABLE          ROWS   LEGACY TABLE        LEGACY ROWS  OK?");
   console.log("────────────────────────────────────────────────────────────");
@@ -711,6 +767,7 @@ async function main() {
   console.log("🚚 Migrating (dependency order, upsert = idempotent)…");
   await migrateOrganization(ctx);
   await migrateMenus(ctx);
+  await migrateMenuPermissions(ctx);
   await migrateUsers(ctx);
   await migrateBanks(ctx);
   await migrateAccounts(ctx);
@@ -720,6 +777,7 @@ async function main() {
   await migrateTransactions(ctx);
   await migrateCollections(ctx);
   await migrateLeaseHistory(ctx);
+  await migratePushSubscriptions(ctx);
 
   console.log("\nWrote rows per table:");
   for (const [k, v] of Object.entries(ctx.stats)) {
