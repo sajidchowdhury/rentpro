@@ -414,12 +414,14 @@ function loadDataset(): Dataset {
     .map((r) => {
       const ahId = r.transection_head_id === null || r.transection_head_id === "" ? null : num(r.transection_head_id);
       const dif = str(r.data_inserted_from) || null;
-      // Fund transfers (cash -> bank / bank -> cash) are marked via
-      // data_inserted_from = 'MONEY-TRANSFER-FROM'/'MONEY-TRANSFER-TO' in the
-      // legacy dump. Override the account-head type so the Day Book can
-      // exclude them from income/expense while still keeping them in the
-      // cash/bank balance movement.
-      const type: Txn["type"] = isTransferMarker(dif) ? "TRANSFER" : headType(ahId);
+      // Fund transfers (cash -> bank / bank -> cash) are not income or expense.
+      // Detect them two ways for robustness: (1) the legacy marker
+      // data_inserted_from = 'MONEY-TRANSFER-FROM'/'MONEY-TRANSFER-TO', and
+      // (2) the account head name being 'FUND TRANSFER' (head id 3 in the
+      // dump). Either way -> mark as TRANSFER so the Day Book excludes them
+      // from income/expense rows + totals while keeping them in the balance.
+      const isFundTransferHead = headName(ahId).toUpperCase() === "FUND TRANSFER";
+      const type: Txn["type"] = (isTransferMarker(dif) || isFundTransferHead) ? "TRANSFER" : headType(ahId);
       return {
         id: num(r.id),
         inAmount: num(r.in_amount),
@@ -2249,20 +2251,19 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
   const bankOut = opBank.reduce((s, t) => s + t.outAmount, 0);
 
   // --- Internal fund transfers in the period, by direction ---
-  // A transfer is a FROM/TO pair: MONEY-TRANSFER-FROM (out of source pot) +
-  // MONEY-TRANSFER-TO (into dest pot). cash->bank shows as FROM-cash (out) +
-  // TO-bank (in); bank->cash the reverse.
+  // A transfer is a FROM/TO pair: the FROM side has out_amount > 0 (money
+  // leaving its pot) and the TO side has in_amount > 0 (money arriving). We
+  // count only the FROM side (out > 0) to avoid double-counting each pair.
+  // Direction is determined by the FROM side's method: cash out -> bank
+  // (transferCashToBank); bank out -> cash (transferBankToCash).
   const transferTxns = rangeTxns.filter(isTransfer);
   let transferCashToBank = 0; // FROM-cash (cash leaving for bank)
   let transferBankToCash = 0; // FROM-bank (bank leaving for cash)
   for (const t of transferTxns) {
-    // FROM side = out_amount moves money OUT of its method's pot
-    if ((t.dataInsertedFrom ?? "").toUpperCase() === "MONEY-TRANSFER-FROM" && t.outAmount > 0) {
+    if (t.outAmount > 0) {
       if (isBank(t.method)) transferBankToCash += t.outAmount;
       else transferCashToBank += t.outAmount;
     }
-    // TO side is the mirror — counted on the FROM side above, so skip here to
-    // avoid double counting (each transfer is a FROM+TO pair of equal amount).
   }
 
   // --- Closing balance split: opening +- real income/expense AND transfers ---
