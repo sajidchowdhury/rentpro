@@ -34,6 +34,7 @@ interface DayBook {
   rows: DayBookRow[];
   totalIncome: number; totalExpense: number;
   cashIn: number; cashOut: number; bankIn: number; bankOut: number;
+  transferCashToBank: number; transferBankToCash: number;
   net: number; closing: number; closingCash: number; closingBank: number;
 }
 interface YearlyMonth { month: string; rentCollected: number; income: number; expense: number; net: number; }
@@ -382,6 +383,20 @@ function DayBookTable({ data }: { data: DayBook }) {
             <div className="flex justify-between"><span className="flex items-center gap-1.5 text-muted-foreground"><span className="size-2 rounded-full bg-emerald-500" /> Bank received</span><span className="font-medium tabular-nums text-emerald-600 dark:text-emerald-400">{money(data.bankIn)}</span></div>
             <div className="flex justify-between"><span className="flex items-center gap-1.5 text-muted-foreground"><span className="size-2 rounded-full bg-rose-500" /> Bank paid</span><span className="font-medium tabular-nums text-rose-600 dark:text-rose-400">{money(data.bankOut)}</span></div>
           </div>
+          {(data.transferCashToBank > 0 || data.transferBankToCash > 0) && (
+            <>
+              <Separator className="my-2" />
+              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Fund transfers <span className="normal-case font-normal">(not income/expense)</span></div>
+              <div className="grid grid-cols-1 gap-1.5 text-xs">
+                {data.transferCashToBank > 0 && (
+                  <div className="flex justify-between"><span className="text-muted-foreground">Cash → Bank</span><span className="font-medium tabular-nums text-sky-700 dark:text-sky-300">{money(data.transferCashToBank)}</span></div>
+                )}
+                {data.transferBankToCash > 0 && (
+                  <div className="flex justify-between"><span className="text-muted-foreground">Bank → Cash</span><span className="font-medium tabular-nums text-amber-700 dark:text-amber-300">{money(data.transferBankToCash)}</span></div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -593,7 +608,7 @@ function dayBookHTML(d: DayBook): string {
     <table class="compact"><tbody>
       <tr><th colspan=2>Opening Balance</th><th class="r">${money(d.opening)}</th><td>Bank ${money(d.openingBank)} · Cash ${money(d.openingCash)}</td></tr>
       <tr><th colspan=2>Closing Balance</th><th class="r">${money(d.closing)}</th><td>Bank ${money(d.closingBank)} · Cash ${money(d.closingCash)}</td></tr>
-      <tr><td colspan=4>Movement — Cash in ${money(d.cashIn)} / out ${money(d.cashOut)} · Bank in ${money(d.bankIn)} / out ${money(d.bankOut)}</td></tr>
+      <tr><td colspan=4>Movement — Cash in ${money(d.cashIn)} / out ${money(d.cashOut)} · Bank in ${money(d.bankIn)} / out ${money(d.bankOut)}${(d.transferCashToBank > 0 || d.transferBankToCash > 0) ? ` · Transfers Cash→Bank ${money(d.transferCashToBank)} / Bank→Cash ${money(d.transferBankToCash)} (excluded from totals)` : ""}</td></tr>
     </tbody></table>
     <table><thead><tr><th>Date</th><th>Particulars</th><th>Head</th><th>Method</th><th class="r">Income</th><th class="r">Expense</th><th class="r">Balance</th></tr></thead>
     <tbody>${rows}</tbody>

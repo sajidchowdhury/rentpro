@@ -92,6 +92,16 @@ export function normalizeMethod(raw: string | null | undefined): PaymentMethod {
   }
   return "CASH";
 }
+
+// Detects whether a transaction is an internal fund transfer (cash -> bank
+// or bank -> cash) based on the legacy `data_inserted_from` marker. These are
+// NOT income or expense — they just move money between the cash box and a
+// bank account — so the Day Book must exclude them from the income/expense
+// rows and totals (while still reflecting them in the cash/bank balances).
+export function isTransferMarker(dataInsertedFrom: string | null | undefined): boolean {
+  const v = (dataInsertedFrom ?? "").trim().toUpperCase();
+  return v === "MONEY-TRANSFER-FROM" || v === "MONEY-TRANSFER-TO";
+}
 export interface Txn {
   id: number;
   inAmount: number;
@@ -105,6 +115,11 @@ export interface Txn {
   // out of (or into) either the cash box or a bank account. This is what lets
   // the Day Book show a separate Cash-in-hand and Bank balance.
   method: PaymentMethod;
+  // Legacy `data_inserted_from` — the screen/action that created the row.
+  // Used to detect fund transfers ('MONEY-TRANSFER-FROM'/'MONEY-TRANSFER-TO')
+  // which are NOT income or expense (just moving money between cash & bank)
+  // and must be excluded from the Day Book income/expense rows + totals.
+  dataInsertedFrom: string | null;
 }
 
 export interface AccountHead {
@@ -398,6 +413,13 @@ function loadDataset(): Dataset {
   const txns: Txn[] = rows("account_transection")
     .map((r) => {
       const ahId = r.transection_head_id === null || r.transection_head_id === "" ? null : num(r.transection_head_id);
+      const dif = str(r.data_inserted_from) || null;
+      // Fund transfers (cash -> bank / bank -> cash) are marked via
+      // data_inserted_from = 'MONEY-TRANSFER-FROM'/'MONEY-TRANSFER-TO' in the
+      // legacy dump. Override the account-head type so the Day Book can
+      // exclude them from income/expense while still keeping them in the
+      // cash/bank balance movement.
+      const type: Txn["type"] = isTransferMarker(dif) ? "TRANSFER" : headType(ahId);
       return {
         id: num(r.id),
         inAmount: num(r.in_amount),
@@ -406,8 +428,9 @@ function loadDataset(): Dataset {
         note: str(r.note) || null,
         accountHeadId: ahId,
         accountHeadName: headName(ahId),
-        type: headType(ahId),
+        type,
         method: normalizeMethod(str(r.transection_by)),
+        dataInsertedFrom: dif,
       } as Txn;
     })
     .filter((t) => t.id);
@@ -512,13 +535,13 @@ function seedDemoDataset(): Dataset {
   const txns: Txn[] = [];
   let tid = 1;
   for (const c of collections) {
-    txns.push({ id: tid++, inAmount: c.rent, outAmount: 0, transectionDate: c.receiveDate, note: `Rent — ${c.rentMonth} ${c.rentYear}`, type: "INCOME", accountHeadId: 1, accountHeadName: "RENT COLLECTION", method: "CASH" });
+    txns.push({ id: tid++, inAmount: c.rent, outAmount: 0, transectionDate: c.receiveDate, note: `Rent — ${c.rentMonth} ${c.rentYear}`, type: "INCOME", accountHeadId: 1, accountHeadName: "RENT COLLECTION", method: "CASH", dataInsertedFrom: "RENT COLLECTION" });
   }
   for (let off = 2; off >= 0; off--) {
     const k = nowKey - off;
     const d = new Date(Math.floor(k / 12), (k % 12), 12);
-    txns.push({ id: tid++, inAmount: 0, outAmount: 2200, transectionDate: d, note: `Electricity — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 2, accountHeadName: "ELECTRICITY BILL", method: "CASH" });
-    txns.push({ id: tid++, inAmount: 0, outAmount: 800, transectionDate: d, note: `Gas — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 3, accountHeadName: "GAS BILL", method: "CASH" });
+    txns.push({ id: tid++, inAmount: 0, outAmount: 2200, transectionDate: d, note: `Electricity — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 2, accountHeadName: "ELECTRICITY BILL", method: "CASH", dataInsertedFrom: "ADD EXPENSE" });
+    txns.push({ id: tid++, inAmount: 0, outAmount: 800, transectionDate: d, note: `Gas — ${MONTHS[k % 12]}`, type: "EXPENSE", accountHeadId: 3, accountHeadName: "GAS BILL", method: "CASH", dataInsertedFrom: "ADD EXPENSE" });
   }
 
   // demo users — reuse the documented password "101010Sajid"
@@ -1304,6 +1327,7 @@ export function collectRent(p: CollectPayload): {
         note: `Rent collection — ${tenant.name} — ${p.month} ${p.year}`,
         type: "INCOME",
         method: p.method === "BANK" ? "BANK" : p.method === "MOBILE_BANK" ? "MOBILE_BANK" : "CASH",
+        dataInsertedFrom: "RENT COLLECTION",
       });
     }
   }
@@ -1560,6 +1584,7 @@ export function recordExpense(
     accountHeadId: head.id,
     accountHeadName: head.name,
     method: p.method ?? "CASH",
+    dataInsertedFrom: "ADD EXPENSE",
   });
 
   return { ok: true };
@@ -1868,6 +1893,7 @@ export function settleLease(
       accountHeadId: null,
       accountHeadName: "ADVANCE ADJUSTMENT",
       method: "CASH",
+      dataInsertedFrom: "ADVANCE ADJUSTMENT",
     });
   }
   // 2) advance refunded to tenant (cash out)
@@ -1886,6 +1912,7 @@ export function settleLease(
       accountHeadId: null,
       accountHeadName: "CLIENT ADVANCE",
       method: "CASH",
+      dataInsertedFrom: "ADVANCE REFUND",
     });
   }
   // 3) tenant pays the remaining outstanding (cash in)
@@ -1900,6 +1927,7 @@ export function settleLease(
       accountHeadId: null,
       accountHeadName: "RENT COLLECTION",
       method: "CASH",
+      dataInsertedFrom: "RENT COLLECTION",
     });
   }
 
@@ -2128,18 +2156,29 @@ export interface DayBookReport {
   // Cash-in-hand. Mirrors the legacy Day Book "Opening Balance" card.
   openingCash: number;
   openingBank: number;
+  // Only real income/expense transactions (rent collection, add income, add
+  // expense). Fund transfers (cash -> bank / bank -> cash) are EXCLUDED from
+  // these rows and totals — they're not income or expense, just internal
+  // movements between the two pots.
   rows: DayBookRow[];
   totalIncome: number;
   totalExpense: number;
-  // Movement during the period, by method. cashIn + bankIn = totalIncome;
-  // cashOut + bankOut = totalExpense.
+  // Real income/expense movement during the period, by pot (excludes
+  // transfers). cashIn + bankIn = totalIncome; cashOut + bankOut = totalExpense.
   cashIn: number;
   cashOut: number;
   bankIn: number;
   bankOut: number;
+  // Internal fund transfers in the period (cash -> bank and bank -> cash).
+  // These are excluded from the income/expense rows + totals above, but ARE
+  // reflected in the closing cash/bank split below (because the money really
+  // did move between pots).
+  transferCashToBank: number;
+  transferBankToCash: number;
   net: number;
   closing: number;
-  // Closing balance split — opening ± the period's movement for each pot.
+  // Closing balance split — opening ± the period's movement (income/expense
+  // AND transfers) for each pot.
   closingCash: number;
   closingBank: number;
 }
@@ -2159,8 +2198,13 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
 
   const isBank = (m: PaymentMethod) => m === "BANK" || m === "MOBILE_BANK";
   const netOf = (t: Txn) => t.inAmount - t.outAmount;
+  // Fund transfers are not income/expense — exclude them from rows + totals +
+  // the period movement summary, but keep them in the opening/closing balance
+  // (the money really did move between cash and bank).
+  const isTransfer = (t: Txn) => t.type === "TRANSFER";
 
-  // --- Opening balance: sum every txn before `from`, split by method ---
+  // --- Opening balance: sum every txn before `from`, split by method.
+  // Includes transfers (so the opening cash/bank split reflects history). ---
   const openingTxns = ds.txns.filter((t) => beforeRange(t.transectionDate));
   const openingCash = openingTxns
     .filter((t) => !isBank(t.method))
@@ -2170,12 +2214,14 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
     .reduce((s, t) => s + netOf(t), 0);
   const opening = openingCash + openingBank;
 
-  // --- In-range rows (sorted) + per-method movement totals ---
+  // --- In-range transactions, sorted by date ---
   const rangeTxns = ds.txns
     .filter((t) => inRange(t.transectionDate))
     .sort((a, b) => (a.transectionDate!.getTime() - b.transectionDate!.getTime()));
 
-  const rows: DayBookRow[] = rangeTxns.map((t) => ({
+  // --- Rows: only real income/expense (transfers excluded) ---
+  const operatingTxns = rangeTxns.filter((t) => !isTransfer(t));
+  const rows: DayBookRow[] = operatingTxns.map((t) => ({
     date: dateOnly(t.transectionDate)!,
     particulars: t.note ?? "",
     head: t.accountHeadName || (t.inAmount > 0 ? "Income" : "Expense"),
@@ -2194,16 +2240,36 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
   const totalIncome = rows.reduce((s, r) => s + r.income, 0);
   const totalExpense = rows.reduce((s, r) => s + r.expense, 0);
 
-  // movement by pot
-  const cashTxns = rangeTxns.filter((t) => !isBank(t.method));
-  const bankTxns = rangeTxns.filter((t) => isBank(t.method));
-  const cashIn = cashTxns.reduce((s, t) => s + t.inAmount, 0);
-  const cashOut = cashTxns.reduce((s, t) => s + t.outAmount, 0);
-  const bankIn = bankTxns.reduce((s, t) => s + t.inAmount, 0);
-  const bankOut = bankTxns.reduce((s, t) => s + t.outAmount, 0);
+  // --- Real income/expense movement by pot (transfers excluded) ---
+  const opCash = operatingTxns.filter((t) => !isBank(t.method));
+  const opBank = operatingTxns.filter((t) => isBank(t.method));
+  const cashIn = opCash.reduce((s, t) => s + t.inAmount, 0);
+  const cashOut = opCash.reduce((s, t) => s + t.outAmount, 0);
+  const bankIn = opBank.reduce((s, t) => s + t.inAmount, 0);
+  const bankOut = opBank.reduce((s, t) => s + t.outAmount, 0);
 
-  const closingCash = openingCash + cashIn - cashOut;
-  const closingBank = openingBank + bankIn - bankOut;
+  // --- Internal fund transfers in the period, by direction ---
+  // A transfer is a FROM/TO pair: MONEY-TRANSFER-FROM (out of source pot) +
+  // MONEY-TRANSFER-TO (into dest pot). cash->bank shows as FROM-cash (out) +
+  // TO-bank (in); bank->cash the reverse.
+  const transferTxns = rangeTxns.filter(isTransfer);
+  let transferCashToBank = 0; // FROM-cash (cash leaving for bank)
+  let transferBankToCash = 0; // FROM-bank (bank leaving for cash)
+  for (const t of transferTxns) {
+    // FROM side = out_amount moves money OUT of its method's pot
+    if ((t.dataInsertedFrom ?? "").toUpperCase() === "MONEY-TRANSFER-FROM" && t.outAmount > 0) {
+      if (isBank(t.method)) transferBankToCash += t.outAmount;
+      else transferCashToBank += t.outAmount;
+    }
+    // TO side is the mirror — counted on the FROM side above, so skip here to
+    // avoid double counting (each transfer is a FROM+TO pair of equal amount).
+  }
+
+  // --- Closing balance split: opening +- real income/expense AND transfers ---
+  // cash:  openingCash + cashIn - cashOut  - transferCashToBank + transferBankToCash
+  // bank:  openingBank + bankIn - bankOut + transferCashToBank - transferBankToCash
+  const closingCash = openingCash + cashIn - cashOut - transferCashToBank + transferBankToCash;
+  const closingBank = openingBank + bankIn - bankOut + transferCashToBank - transferBankToCash;
   const closing = closingCash + closingBank;
 
   return {
@@ -2219,6 +2285,8 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
     cashOut,
     bankIn,
     bankOut,
+    transferCashToBank,
+    transferBankToCash,
     net: totalIncome - totalExpense,
     closing,
     closingCash,
