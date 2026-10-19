@@ -2208,12 +2208,28 @@ export interface DayBookReport {
 
 function dateOnly(d: Date | null): string | null {
   if (!d) return null;
-  return d.toISOString().slice(0, 10);
+  // Use LOCAL date components (not toISOString, which is UTC). A transaction
+  // recorded on 01-Mar local midnight is stored as new Date(year, month, 1)
+  // = local-midnight. On a UTC+N server, toISOString() would roll that back
+  // to the previous UTC day (e.g. "2023-02-28"); reading the local year/month/
+  // day keeps it as "2023-03-01".
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 export function getDayBook(fromDate: string, toDate: string): DayBookReport {
   const ds = loadDataset();
-  const from = fromDate ? new Date(fromDate) : new Date(0);
+  // Parse `from`/`to` as LOCAL midnight / 11:59pm (not UTC midnight) so they
+  // line up with how transaction dates are parsed in toDate() (local midnight
+  // via new Date(year, month, day)). With date-only strings, JS treats
+  // new Date("2023-03-01") as UTC midnight — which, on a UTC+6 server, is 6
+  // hours AHEAD of local midnight, so 1st-of-month transactions (local
+  // midnight) would wrongly fall before `from` and get dumped into the
+  // opening balance instead of the period rows. Appending "T00:00:00" makes
+  // it local midnight and fixes the off-by-one.
+  const from = fromDate ? new Date(fromDate + "T00:00:00") : new Date(0);
   const to = toDate ? new Date(toDate + "T23:59:59") : new Date(8640000000000000);
 
   const inRange = (d: Date | null) => d !== null && d >= from && d <= to;
