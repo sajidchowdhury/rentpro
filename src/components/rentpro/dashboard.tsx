@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Wallet, CheckCircle2, AlertCircle, Home, Building2, TrendingUp, TrendingDown, Phone, ArrowUpRight, Receipt,
+  Wallet, CheckCircle2, AlertCircle, Home, Building2, TrendingUp, TrendingDown, Phone, ArrowUpRight, Receipt, CalendarClock, RefreshCw, Repeat,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,15 @@ interface DashboardData {
     predictedTotal: number;
     types: Array<{ headId: number; name: string; missingCount: number; predictedAmount: number; lastRecorded: string | null }>;
   };
+  recurringExpenses: Array<{
+    headId: number; name: string; recorded: boolean;
+    asOfAmount: number; predictedAmount: number;
+    lastRecorded: string | null; missingCount: number;
+  }>;
+  rentStatusTimeline: Array<{
+    month: string; year: string; label: string; isCurrent: boolean;
+    expectedCount: number; paidCount: number; collectedAmount: number; generated: boolean;
+  }>;
 }
 
 function StatCard({
@@ -69,6 +78,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
     collectedAmount, paidLeaseCount, pendingAmount, dueLeaseCount,
     vacantUnitCount, occupiedUnitCount, totalUnits, totalProperties,
     incomeThisMonth, expenseThisMonth, dueLeases, vacantUnits, recentCollections, trend, expenseDue,
+    recurringExpenses, rentStatusTimeline,
   } = data;
   const duePaged = usePagination(dueLeases, 8);
 
@@ -160,6 +170,99 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
           </div>
         </CardContent>
       </Card>
+
+      {/* Monthly Rent Status timeline — shows which months have rent generated
+          vs missing, so the manager can see "July done, Aug/Sep/Oct missing =
+          3 months behind" at a glance. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2"><CalendarClock className="size-4" /> Monthly Rent Status</CardTitle>
+              <CardDescription>Last 12 months — green = collected, amber = partial, red = not generated</CardDescription>
+            </div>
+            {(() => {
+              // count months behind = months with 0 collections up to the current month
+              const missing = rentStatusTimeline.filter((m) => m.isCurrent || (!m.generated && m.expectedCount > 0));
+              const behind = missing.filter((m) => !m.generated).length;
+              if (behind > 0) {
+                return <Badge className="bg-rose-100 text-rose-700 hover:bg-rose-100">{behind} month{behind > 1 ? "s" : ""} behind on rent</Badge>;
+              }
+              return <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">Up to date</Badge>;
+            })()}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-2 overflow-x-auto pb-2">
+            {rentStatusTimeline.map((m) => {
+              const allPaid = m.expectedCount > 0 && m.paidCount >= m.expectedCount;
+              const partial = m.paidCount > 0 && m.paidCount < m.expectedCount;
+              const notGen = m.expectedCount > 0 && m.paidCount === 0 && !m.generated;
+              const cls = m.expectedCount === 0
+                ? "bg-muted/40 text-muted-foreground border-transparent"
+                : allPaid
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
+                : partial
+                ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900"
+                : notGen
+                ? "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-900"
+                : "bg-muted/40 text-muted-foreground border-transparent";
+              return (
+                <div key={m.label} className={`shrink-0 w-[5.5rem] rounded-lg border p-2 text-center ${cls} ${m.isCurrent ? "ring-2 ring-offset-1 ring-primary/40" : ""}`}>
+                  <div className="text-[11px] font-semibold truncate">{m.label}</div>
+                  <div className="text-sm font-bold mt-0.5">
+                    {m.expectedCount === 0 ? "—" : `${m.paidCount}/${m.expectedCount}`}
+                  </div>
+                  <div className="text-[10px] mt-0.5">
+                    {m.expectedCount === 0 ? "no leases" : allPaid ? "all paid" : partial ? "partial" : notGen ? "not gen" : "—"}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Recurring Monthly Expenses — full checklist of monthly bills with
+          recorded/pending status for the selected month. */}
+      {recurringExpenses.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle className="text-base flex items-center gap-2"><Repeat className="size-4" /> Recurring Monthly Expenses</CardTitle>
+                <CardDescription>
+                  {recurringExpenses.filter((e) => e.recorded).length} of {recurringExpenses.length} recorded for {month} {year}
+                </CardDescription>
+              </div>
+              {recurringExpenses.some((e) => !e.recorded) && onGoToExpenses && (
+                <Button size="sm" variant="outline" onClick={onGoToExpenses}>
+                  Record <ArrowUpRight className="size-3.5" />
+                </Button>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {recurringExpenses.map((e) => (
+                <div key={e.headId} className={`flex items-center gap-2 rounded-md border p-2.5 ${e.recorded ? "border-emerald-200 bg-emerald-50/50 dark:border-emerald-900 dark:bg-emerald-950/20" : "border-rose-200 bg-rose-50/50 dark:border-rose-900 dark:bg-rose-950/20"}`}>
+                  <div className={`size-7 rounded grid place-items-center shrink-0 ${e.recorded ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-300" : "bg-rose-100 text-rose-600 dark:bg-rose-950/60 dark:text-rose-300"}`}>
+                    {e.recorded ? <CheckCircle2 className="size-4" /> : <AlertCircle className="size-4" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{e.name}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {e.recorded
+                        ? <>paid {money(e.asOfAmount)}</>
+                        : <>~ {money(e.predictedAmount)} predicted{e.lastRecorded ? ` · last ${e.lastRecorded}` : ""}</>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Trend + Cashflow */}
       <div className="grid gap-4 lg:grid-cols-3">

@@ -671,6 +671,33 @@ export interface DashboardData {
       lastRecorded: string | null;
     }>;
   };
+  // Recurring monthly expense heads (recorded in 2+ months historically) with
+  // their status for the selected month — so the manager can see at a glance
+  // which monthly bills (electricity, gas, cleaning...) are recorded vs
+  // still pending for this month.
+  recurringExpenses: Array<{
+    headId: number;
+    name: string;
+    recorded: boolean;
+    asOfAmount: number;
+    predictedAmount: number;
+    lastRecorded: string | null;
+    missingCount: number;
+  }>;
+  // Monthly rent status timeline — last 12 months ending at the selected
+  // month. Shows whether each month has rent generated (collections exist)
+  // and how many leases paid vs expected. Lets the manager see at a glance
+  // "July done, Aug/Sep/Oct missing = 3 months behind".
+  rentStatusTimeline: Array<{
+    month: string;
+    year: string;
+    label: string;
+    isCurrent: boolean;
+    expectedCount: number;
+    paidCount: number;
+    collectedAmount: number;
+    generated: boolean; // true if any collection record exists for this month
+  }>;
 }
 
 export function getAvailableMonths(): { year: string; month: string }[] {
@@ -831,6 +858,55 @@ export function getDashboard(month: string, year: string): DashboardData {
       })),
   };
 
+  // --- Recurring monthly expense heads (full list with status for this month) ---
+  // A head is "recurring" if it's been recorded in 2+ distinct months. Show
+  // ALL of them (recorded + pending) so the manager sees the full monthly
+  // bill checklist, not just the missing ones.
+  const recurringExpenses = expTracker.types
+    .filter((t) => t.recurring)
+    .map((t) => ({
+      headId: t.headId,
+      name: t.name,
+      recorded: t.recordedInAsOf,
+      asOfAmount: t.asOfAmount,
+      predictedAmount: t.predictedAmount,
+      lastRecorded: t.lastRecorded ? `${t.lastRecorded.month} ${t.lastRecorded.year}` : null,
+      missingCount: t.missingMonths.length,
+    }))
+    .sort((a, b) => Number(a.recorded) - Number(b.recorded) || a.name.localeCompare(b.name));
+
+  // --- Monthly rent status timeline (last 12 months) ---
+  // For each month, show whether any collections exist (generated) and how
+  // many leases paid vs expected. This lets the manager see gaps: "July done,
+  // Aug/Sep/Oct missing = 3 months behind".
+  const rentStatusTimeline: DashboardData["rentStatusTimeline"] = [];
+  for (let i = 11; i >= 0; i--) {
+    const k = targetKey - i;
+    if (k < 0) continue;
+    const y = Math.floor(k / 12);
+    const m = MONTHS[k % 12];
+    const monthName = m;
+    const yearStr = String(y);
+    const expected = ds.leases.filter((l) => leaseCoversMonth(l, k)).length;
+    const monthCols = ds.collections.filter(
+      (c) => c.rentMonth === monthName && c.rentYear === yearStr
+    );
+    const paid = monthCols.filter((c) => c.status === "DONE").length;
+    const collected = monthCols
+      .filter((c) => c.status === "DONE")
+      .reduce((s, c) => s + c.rent, 0);
+    rentStatusTimeline.push({
+      month: monthName,
+      year: yearStr,
+      label: `${monthName.slice(0, 3)} ${yearStr}`,
+      isCurrent: k === targetKey,
+      expectedCount: expected,
+      paidCount: paid,
+      collectedAmount: collected,
+      generated: monthCols.length > 0,
+    });
+  }
+
   return {
     month,
     year,
@@ -852,6 +928,8 @@ export function getDashboard(month: string, year: string): DashboardData {
     recentCollections,
     trend,
     expenseDue,
+    recurringExpenses,
+    rentStatusTimeline,
   };
 }
 
