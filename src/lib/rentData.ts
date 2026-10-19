@@ -425,6 +425,7 @@ function loadDataset(): Dataset {
     .map((r) => {
       const ahId = r.transection_head_id === null || r.transection_head_id === "" ? null : num(r.transection_head_id);
       const dif = str(r.data_inserted_from) || null;
+      const difUpper = (dif ?? "").toUpperCase();
       const headNameUpper = headName(ahId).toUpperCase();
       // Fund transfers (cash -> bank / bank -> cash) are not income or expense.
       // Detect them two ways for robustness: (1) the legacy marker
@@ -433,15 +434,17 @@ function loadDataset(): Dataset {
       // dump). Either way -> mark as TRANSFER so the Day Book excludes them
       // from income/expense rows + totals while keeping them in the balance.
       const isFundTransferHead = headNameUpper === "FUND TRANSFER";
-      // Advance adjustments are internal bookkeeping (applying a tenant's
-      // held advance against their due — no cash actually moves). The old
-      // software excluded them from the Day Book income/expense; mark them as
-      // ADJUSTMENT so the new Day Book does the same.
+      // Advance adjustments, due adjustments, and shop opening/closing
+      // payments are internal / non-operating bookkeeping that the old report
+      // excluded from the Day Book entirely (it only listed RENT COLLECTION,
+      // ADD INCOME, ADD EXPENSE rows). Mark them as ADJUSTMENT so they're
+      // excluded from rows, totals, period movement, AND the opening balance.
       const isAdjustmentHead = headNameUpper === "ADVANCE ADJUSTMENT" || headNameUpper === "DUE ADJUSTMENT";
-      const isAdjustmentMarker = (dif ?? "").toUpperCase() === "ADVANCE ADJUSTMENT";
+      const isAdjustmentMarker = difUpper === "ADVANCE ADJUSTMENT";
+      const isShopEvent = difUpper === "SHOP OPENING PAYMENT" || difUpper === "SHOP CLOSING PAYMENT";
       let type: Txn["type"];
       if (isTransferMarker(dif) || isFundTransferHead) type = "TRANSFER";
-      else if (isAdjustmentMarker || isAdjustmentHead) type = "ADJUSTMENT";
+      else if (isAdjustmentMarker || isAdjustmentHead || isShopEvent) type = "ADJUSTMENT";
       else type = headType(ahId);
       return {
         id: num(r.id),
@@ -2242,12 +2245,17 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
   // period movement summary. Transfers are still kept in the opening/closing
   // balance split (the money really did move between cash and bank);
   // adjustments are internal (no cash moves) so they're excluded from the
-  // period movement too, but remain baked into the historical opening.
+  // period movement AND from the opening (their out_amount doesn't represent
+  // real cash leaving — the old report's cash-balance calc used
+  // TRANSECTION_BY_RANGE_BALANCE_WITHOUT_ADVANCE_ADJUSTMENT).
   const isExcludedFromOperating = (t: Txn) => t.type === "TRANSFER" || t.type === "ADJUSTMENT";
 
-  // --- Opening balance: sum every txn before `from`, split by method.
-  // Includes transfers (so the opening cash/bank split reflects history). ---
-  const openingTxns = ds.txns.filter((t) => beforeRange(t.transectionDate));
+  // --- Opening balance: sum every real txn + transfer before `from`, split
+  // by method. EXCLUDES advance adjustments (internal, no cash moves), so the
+  // opening matches the old report's OPENING_BALANCE. ---
+  const openingTxns = ds.txns.filter(
+    (t) => beforeRange(t.transectionDate) && t.type !== "ADJUSTMENT"
+  );
   const openingCash = openingTxns
     .filter((t) => !isBank(t.method))
     .reduce((s, t) => s + netOf(t), 0);
