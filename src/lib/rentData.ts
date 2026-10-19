@@ -241,10 +241,15 @@ const S = getStore();
 
 // --- dump loader (cached) --------------------------------------------------
 const DUMP_CANDIDATES = [
-  // sandbox preview (the cloned legacy repo)
+  // when run from inside the rentpro repo itself (the dump ships in the
+  // repo root). This is the path that works after `git clone` + `bun run dev`.
+  "osudlagb_home_rent.sql",
+  // sandbox preview (the cloned legacy repo sits alongside)
   "rent-project/osudlagb_home_rent.sql",
-  // when run inside the rentpro repo itself
   "../rent-project/osudlagb_home_rent.sql",
+  "../../rent-project/osudlagb_home_rent.sql",
+  // the two utf8 / backup variants that also ship in the repo
+  "backup_2026-10-18_utf8.sql",
   process.env.LEGACY_SQL_PATH ?? "",
 ].filter(Boolean);
 
@@ -310,7 +315,13 @@ function loadDataset(): Dataset {
 
   const path = findDump();
   if (!path) {
-    console.warn("[rentData] No legacy dump found — running with an empty dataset. Mount your dump (LEGACY_SQL_PATH) to load your real data.");
+    console.warn(
+      "[rentData] No legacy dump found — running with an EMPTY dataset.\n" +
+      "  Looking for: osudlagb_home_rent.sql in the repo root (or rent-project/,\n" +
+      "  ../rent-project/, or LEGACY_SQL_PATH env var).\n" +
+      "  Fix: ensure osudlagb_home_rent.sql is in the rentpro repo root, or set\n" +
+      "  LEGACY_SQL_PATH=/absolute/path/to/your/dump.sql in .env"
+    );
     const empty: Dataset = { properties: [], units: [], tenants: [], leases: [], collections: [], txns: [], accountHeads: [], company: null, users: [] };
     S.cache = empty;
     S.dataSource = "real";
