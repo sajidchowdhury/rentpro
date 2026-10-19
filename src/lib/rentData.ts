@@ -425,14 +425,24 @@ function loadDataset(): Dataset {
     .map((r) => {
       const ahId = r.transection_head_id === null || r.transection_head_id === "" ? null : num(r.transection_head_id);
       const dif = str(r.data_inserted_from) || null;
+      const headNameUpper = headName(ahId).toUpperCase();
       // Fund transfers (cash -> bank / bank -> cash) are not income or expense.
       // Detect them two ways for robustness: (1) the legacy marker
       // data_inserted_from = 'MONEY-TRANSFER-FROM'/'MONEY-TRANSFER-TO', and
       // (2) the account head name being 'FUND TRANSFER' (head id 3 in the
       // dump). Either way -> mark as TRANSFER so the Day Book excludes them
       // from income/expense rows + totals while keeping them in the balance.
-      const isFundTransferHead = headName(ahId).toUpperCase() === "FUND TRANSFER";
-      const type: Txn["type"] = (isTransferMarker(dif) || isFundTransferHead) ? "TRANSFER" : headType(ahId);
+      const isFundTransferHead = headNameUpper === "FUND TRANSFER";
+      // Advance adjustments are internal bookkeeping (applying a tenant's
+      // held advance against their due — no cash actually moves). The old
+      // software excluded them from the Day Book income/expense; mark them as
+      // ADJUSTMENT so the new Day Book does the same.
+      const isAdjustmentHead = headNameUpper === "ADVANCE ADJUSTMENT" || headNameUpper === "DUE ADJUSTMENT";
+      const isAdjustmentMarker = (dif ?? "").toUpperCase() === "ADVANCE ADJUSTMENT";
+      let type: Txn["type"];
+      if (isTransferMarker(dif) || isFundTransferHead) type = "TRANSFER";
+      else if (isAdjustmentMarker || isAdjustmentHead) type = "ADJUSTMENT";
+      else type = headType(ahId);
       return {
         id: num(r.id),
         inAmount: num(r.in_amount),
@@ -2211,10 +2221,13 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
 
   const isBank = (m: PaymentMethod) => m === "BANK" || m === "MOBILE_BANK";
   const netOf = (t: Txn) => t.inAmount - t.outAmount;
-  // Fund transfers are not income/expense — exclude them from rows + totals +
-  // the period movement summary, but keep them in the opening/closing balance
-  // (the money really did move between cash and bank).
-  const isTransfer = (t: Txn) => t.type === "TRANSFER";
+  // Fund transfers (TRANSFER) and advance adjustments (ADJUSTMENT) are NOT
+  // income or expense — exclude both from the Day Book rows, totals, and the
+  // period movement summary. Transfers are still kept in the opening/closing
+  // balance split (the money really did move between cash and bank);
+  // adjustments are internal (no cash moves) so they're excluded from the
+  // period movement too, but remain baked into the historical opening.
+  const isExcludedFromOperating = (t: Txn) => t.type === "TRANSFER" || t.type === "ADJUSTMENT";
 
   // --- Opening balance: sum every txn before `from`, split by method.
   // Includes transfers (so the opening cash/bank split reflects history). ---
@@ -2232,8 +2245,8 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
     .filter((t) => inRange(t.transectionDate))
     .sort((a, b) => (a.transectionDate!.getTime() - b.transectionDate!.getTime()));
 
-  // --- Rows: only real income/expense (transfers excluded) ---
-  const operatingTxns = rangeTxns.filter((t) => !isTransfer(t));
+  // --- Rows: only real income/expense (transfers + adjustments excluded) ---
+  const operatingTxns = rangeTxns.filter((t) => !isExcludedFromOperating(t));
   const rows: DayBookRow[] = operatingTxns.map((t) => ({
     date: dateOnly(t.transectionDate)!,
     particulars: t.note ?? "",
@@ -2267,7 +2280,7 @@ export function getDayBook(fromDate: string, toDate: string): DayBookReport {
   // count only the FROM side (out > 0) to avoid double-counting each pair.
   // Direction is determined by the FROM side's method: cash out -> bank
   // (transferCashToBank); bank out -> cash (transferBankToCash).
-  const transferTxns = rangeTxns.filter(isTransfer);
+  const transferTxns = rangeTxns.filter((t) => t.type === "TRANSFER");
   let transferCashToBank = 0; // FROM-cash (cash leaving for bank)
   let transferBankToCash = 0; // FROM-bank (bank leaving for cash)
   for (const t of transferTxns) {
