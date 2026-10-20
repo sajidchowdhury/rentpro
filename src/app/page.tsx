@@ -23,6 +23,8 @@ import { toast } from "sonner";
 
 type View = ViewId;
 
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
 interface MonthOpt { year: string; month: string }
 
 interface OrgSummary {
@@ -89,8 +91,21 @@ export default function RentProPage() {
         const ms: MonthOpt[] = d.months ?? [];
         setMonths(ms);
         if (ms.length > 0) {
-          setMonth(ms[0].month);
-          setYear(ms[0].year);
+          // Default to the CURRENT month (not the latest month with data).
+          // The months API now always includes a window around "now", so the
+          // current month is always selectable. This fixes the period selector
+          // being stuck at the last data month (e.g. July when it's October).
+          const now = new Date();
+          const nowMonth = MONTHS[now.getMonth()];
+          const nowYear = String(now.getFullYear());
+          const current = ms.find((m) => m.month === nowMonth && m.year === nowYear);
+          if (current) {
+            setMonth(current.month);
+            setYear(current.year);
+          } else {
+            setMonth(ms[0].month);
+            setYear(ms[0].year);
+          }
         }
       })
       .catch(() => toast.error("Failed to load months"));

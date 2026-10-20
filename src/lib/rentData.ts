@@ -716,7 +716,24 @@ export interface DashboardData {
 export function getAvailableMonths(): { year: string; month: string }[] {
   const ds = loadDataset();
   const set = new Set<string>();
+  // months that have actual collection data
   for (const c of ds.collections) set.add(`${c.rentYear}|${c.rentMonth}`);
+
+  // ALWAYS include a window around "now" so the manager can select the
+  // current month (and recent months) even before any rent is generated /
+  // collected for them. Without this, the period selector is stuck at the
+  // last month that has data (e.g. July when it's actually October).
+  // Window: 6 months back through 1 month ahead of the current month.
+  const now = new Date();
+  const nowKey = now.getFullYear() * 12 + now.getMonth();
+  for (let off = -6; off <= 1; off++) {
+    const k = nowKey + off;
+    if (k < 0) continue;
+    const y = Math.floor(k / 12);
+    const m = MONTHS[k % 12];
+    set.add(`${y}|${m}`);
+  }
+
   const arr = [...set]
     .map((k) => {
       const [year, month] = k.split("|");
@@ -726,8 +743,7 @@ export function getAvailableMonths(): { year: string; month: string }[] {
     .map(({ year, month }) => ({ year, month }));
   if (arr.length === 0) {
     // fallback to "now"
-    const d = new Date();
-    return [{ year: String(d.getFullYear()), month: MONTHS[d.getMonth()] }];
+    return [{ year: String(now.getFullYear()), month: MONTHS[now.getMonth()] }];
   }
   return arr;
 }
