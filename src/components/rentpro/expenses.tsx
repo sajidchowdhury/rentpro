@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Receipt, CheckCircle2, AlertTriangle, History, Plus, Zap, Wallet,
+  Receipt, CheckCircle2, AlertTriangle, History, Plus, Zap, Wallet, Pencil, Tags, Repeat,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
@@ -44,6 +45,11 @@ interface Tracker {
   dueCount: number; dueTotal: number;
   backfillCount: number;
 }
+interface AccountHead {
+  id: number; name: string;
+  type: "INCOME" | "EXPENSE" | "BOTH" | "ASSET" | "LIABILITY";
+  recurringMonthly: boolean;
+}
 
 function todayLocal(): string {
   const d = new Date();
@@ -53,7 +59,8 @@ function todayLocal(): string {
 
 export function ExpensesView({ month, year }: { month: string; year: string }) {
   const [tracker, setTracker] = useState<Tracker | null>(null);
-  const [heads, setHeads] = useState<{ id: number; name: string }[]>([]);
+  const [heads, setHeads] = useState<{ id: number; name: string; recurring: boolean }[]>([]);
+  const [allHeads, setAllHeads] = useState<AccountHead[]>([]);
   const [loading, setLoading] = useState(true);
 
   // record dialog
@@ -67,6 +74,23 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
   const [dMethod, setDMethod] = useState<"CASH" | "BANK" | "MOBILE_BANK">("CASH");
   const [submitting, setSubmitting] = useState(false);
   const [batchMissing, setBatchMissing] = useState<{ month: string; year: string }[]>([]);
+
+  // expense-type (account head) add/edit dialog
+  const [typeOpen, setTypeOpen] = useState(false);
+  const [editHead, setEditHead] = useState<AccountHead | null>(null);
+  const [tName, setTName] = useState("");
+  const [tType, setTType] = useState<AccountHead["type"]>("EXPENSE");
+  const [tRecurring, setTRecurring] = useState(false);
+  const [tBusy, setTBusy] = useState(false);
+
+  const refreshHeads = useCallback(async () => {
+    try {
+      const r = await fetch("/api/expense-heads");
+      const d = await r.json();
+      setHeads(d.heads ?? []);
+      setAllHeads(d.allHeads ?? []);
+    } catch { /* ignore */ }
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -82,9 +106,7 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
   }, [month, year]);
 
   useEffect(() => { refresh(); }, [refresh]);
-  useEffect(() => {
-    fetch("/api/expense-heads").then((r) => r.json()).then((d) => setHeads(d.heads ?? [])).catch(() => {});
-  }, []);
+  useEffect(() => { refreshHeads(); }, [refreshHeads]);
 
   function openRecord(t: ExpenseTypeStatus) {
     setDHeadId(t.headId);
@@ -151,6 +173,41 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
 
   const typesPaged = usePagination(tracker?.types ?? [], 12);
   const duePaged = usePagination(tracker ? tracker.types.filter((t) => t.recurring && !t.recordedInAsOf) : [], 8);
+  const allHeadsPaged = usePagination(allHeads, 12);
+
+  // --- expense type (account head) add / edit ---
+  function openAddType() {
+    setEditHead(null);
+    setTName(""); setTType("EXPENSE"); setTRecurring(false);
+    setTypeOpen(true);
+  }
+  function openEditType(h: AccountHead) {
+    setEditHead(h);
+    setTName(h.name); setTType(h.type); setTRecurring(h.recurringMonthly);
+    setTypeOpen(true);
+  }
+  async function submitType() {
+    if (!tName.trim()) { toast.error("Name is required"); return; }
+    setTBusy(true);
+    try {
+      const url = editHead ? "/api/expense-heads/update" : "/api/expense-heads";
+      const body = editHead
+        ? { id: editHead.id, name: tName, type: tType, recurringMonthly: tRecurring }
+        : { name: tName, type: tType, recurringMonthly: tRecurring };
+      const r = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        toast.success(editHead ? "Expense type updated" : `Added "${tName.trim()}"`);
+        setTypeOpen(false);
+        refreshHeads(); refresh();
+      } else toast.error(d.error ?? "Failed");
+    } catch {
+      toast.error("Failed to save");
+    } finally { setTBusy(false); }
+  }
 
   if (loading || !tracker) {
     return (
@@ -376,6 +433,44 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
         </CardContent>
       </Card>
 
+      {/* Expense Types management — full list of all account heads with
+          add / edit + recurring toggle. */}
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2"><Tags className="size-4" /> Expense Types</CardTitle>
+              <CardDescription>
+                {allHeads.length} account heads · {allHeads.filter((h) => h.recurringMonthly).length} marked recurring
+              </CardDescription>
+            </div>
+            <Button size="sm" onClick={openAddType}><Plus className="size-3.5" /> Add Expense Type</Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="max-h-80 overflow-y-auto">
+            <div className="divide-y">
+              {allHeadsPaged.pageItems.length === 0 ? (
+                <div className="p-6 text-center text-sm text-muted-foreground">No account heads yet.</div>
+              ) : allHeadsPaged.pageItems.map((h) => (
+                <div key={h.id} className="px-4 py-2.5 flex items-center gap-3 hover:bg-muted/40">
+                  <div className={`size-7 rounded grid place-items-center shrink-0 ${h.recurringMonthly ? "bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300" : "bg-muted text-muted-foreground"}`}>
+                    {h.recurringMonthly ? <Repeat className="size-3.5" /> : <Receipt className="size-3.5" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm truncate">{h.name}</div>
+                    <div className="text-[11px] text-muted-foreground">{h.type}</div>
+                  </div>
+                  {h.recurringMonthly && <Badge className="bg-blue-50 text-blue-700 hover:bg-blue-50 text-[10px] dark:bg-blue-950/50 dark:text-blue-300">Recurring</Badge>}
+                  <Button size="icon" variant="ghost" className="size-7" onClick={() => openEditType(h)} title="Edit"><Pencil className="size-3.5" /></Button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <Pager page={allHeadsPaged.page} totalPages={allHeadsPaged.totalPages} total={allHeadsPaged.total} pageSize={allHeadsPaged.pageSize} onPrev={allHeadsPaged.prev} onNext={allHeadsPaged.next} />
+        </CardContent>
+      </Card>
+
       {/* Record dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-md">
@@ -465,6 +560,50 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
             )}
             <Button onClick={() => submitRecord(false)} disabled={submitting || dAmount <= 0}>
               {submitting ? "Saving…" : <>Record {money(dAmount)}</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add / Edit Expense Type dialog */}
+      <Dialog open={typeOpen} onOpenChange={(o) => { if (!o) setTypeOpen(false); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Tags className="size-4" /> {editHead ? "Edit Expense Type" : "Add Expense Type"}</DialogTitle>
+            <DialogDescription>
+              {editHead ? `Editing "${editHead.name}"` : "Create a new account head for recording income or expenses."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs">Name</Label>
+              <Input value={tName} onChange={(e) => setTName(e.target.value)} placeholder="e.g. Electricity Bill / Security Guard Salary" />
+            </div>
+            <div>
+              <Label className="text-xs">Type</Label>
+              <Select value={tType} onValueChange={(v) => setTType(v as AccountHead["type"])}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="EXPENSE">Expense</SelectItem>
+                  <SelectItem value="INCOME">Income</SelectItem>
+                  <SelectItem value="BOTH">Both (income & expense)</SelectItem>
+                  <SelectItem value="ASSET">Asset</SelectItem>
+                  <SelectItem value="LIABILITY">Liability</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <label className="flex items-center justify-between gap-3 rounded-md border p-3 cursor-pointer">
+              <div>
+                <div className="text-sm font-medium flex items-center gap-1.5"><Repeat className="size-3.5" /> Recurring monthly</div>
+                <div className="text-[11px] text-muted-foreground">Show on the dashboard's monthly checklist + rent-status tracker</div>
+              </div>
+              <Switch checked={tRecurring} onCheckedChange={setTRecurring} />
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTypeOpen(false)}>Cancel</Button>
+            <Button onClick={submitType} disabled={tBusy || !tName.trim()}>
+              {tBusy ? "Saving…" : editHead ? "Save Changes" : "Add Type"}
             </Button>
           </DialogFooter>
         </DialogContent>

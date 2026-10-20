@@ -126,6 +126,11 @@ export interface AccountHead {
   id: number;
   name: string;
   type: "INCOME" | "EXPENSE" | "BOTH" | "ASSET" | "LIABILITY";
+  // Explicit "recurring monthly" flag — set by the manager when creating /
+  // editing an account head. For legacy dump heads (which don't carry this
+  // field), it defaults to false; the dashboard's recurring detection still
+  // falls back to "recorded in 2+ months" dynamically.
+  recurringMonthly: boolean;
 }
 
 export interface ExpenseRec {
@@ -185,6 +190,7 @@ interface RentProStore {
   settlements: SettlementRecord[];
   nextPropertyId: number;
   nextUnitId: number;
+  nextAccountHeadId: number;
   organizations: Organization[] | null;
   activeOrgId: string | null;
   nextOrgId: number;
@@ -206,6 +212,7 @@ function getStore(): RentProStore {
       settlements: [],
       nextPropertyId: 1_000_000,
       nextUnitId: 1_000_000,
+      nextAccountHeadId: 1_000_000,
       organizations: null,
       activeOrgId: null,
       nextOrgId: 2,
@@ -222,6 +229,7 @@ function getStore(): RentProStore {
   if (s.nextSettlementId === undefined) s.nextSettlementId = 1_000_000;
   if (s.nextPropertyId === undefined) s.nextPropertyId = 1_000_000;
   if (s.nextUnitId === undefined) s.nextUnitId = 1_000_000;
+  if (s.nextAccountHeadId === undefined) s.nextAccountHeadId = 1_000_000;
   if (s.expenseRecs === undefined) s.expenseRecs = null;
   if (s.generatedMonths === undefined) s.generatedMonths = new Set();
   if (s.tenantAdjustments === undefined) s.tenantAdjustments = new Map();
@@ -413,6 +421,11 @@ function loadDataset(): Dataset {
       id: num(r.id),
       name: str(r.account_head) || `Head ${r.id}`,
       type: (str(r.account_type) || "EXPENSE").toUpperCase() as AccountHead["type"],
+      // Legacy dump has no recurring flag — default false. The dashboard /
+      // expenses screens detect recurring dynamically (2+ months recorded)
+      // for these, but a manager can flip this on explicitly via the edit
+      // dialog to pin a head as recurring.
+      recurringMonthly: false,
     }))
     .filter((a) => a.id);
   const headMap = new Map(accountHeads.map((a) => [a.id, a]));
@@ -517,9 +530,9 @@ function seedDemoDataset(): Dataset {
   const now = new Date();
   const nowKey = now.getFullYear() * 12 + now.getMonth();
   const accountHeads: AccountHead[] = [
-    { id: 1, name: "RENT COLLECTION", type: "INCOME" },
-    { id: 2, name: "ELECTRICITY BILL", type: "EXPENSE" },
-    { id: 3, name: "GAS BILL", type: "EXPENSE" },
+    { id: 1, name: "RENT COLLECTION", type: "INCOME", recurringMonthly: false },
+    { id: 2, name: "ELECTRICITY BILL", type: "EXPENSE", recurringMonthly: true },
+    { id: 3, name: "GAS BILL", type: "EXPENSE", recurringMonthly: true },
   ];
   const properties: Property[] = [{ id: 1, name: "Demo Market", type: "BUILDING", unitCount: 5 }];
   const units: Unit[] = [
@@ -1576,7 +1589,11 @@ export function getExpenseTracker(month: string, year: string): ExpenseTracker {
       (a, b) => keyFromYM(a.year, a.month) - keyFromYM(b.year, b.month)
     );
     const distinct = new Set(sorted.map((r) => `${r.year}|${r.month}`)).size;
-    const recurring = distinct >= 2;
+    // A head is "recurring" if the manager explicitly marked it so, OR it's
+    // been recorded in 2+ distinct months historically (auto-detection for
+    // legacy dump heads that don't carry the explicit flag).
+    const head = ds.accountHeads.find((a) => a.id === hid);
+    const recurring = (head?.recurringMonthly ?? false) || distinct >= 2;
     const asOfRec = sorted.find((r) => r.month === month && r.year === year);
     const last3 = sorted.slice(-3);
     const predicted = last3.length
@@ -1708,12 +1725,61 @@ export function recordExpenseBatch(
 }
 
 /** All expense account heads — for the record dialog's type dropdown. */
-export function getExpenseHeads(): Array<{ id: number; name: string }> {
+export function getExpenseHeads(): Array<{ id: number; name: string; recurring: boolean }> {
   const ds = loadDataset();
   return ds.accountHeads
     .filter((a) => a.type === "EXPENSE" || a.type === "BOTH")
-    .map((a) => ({ id: a.id, name: a.name }))
+    .map((a) => ({ id: a.id, name: a.name, recurring: a.recurringMonthly }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** All account heads (income + expense + both + asset + liability) — for the
+ *  management list on the Expenses screen (add / edit / list all types). */
+export function getAllAccountHeads(): AccountHead[] {
+  const ds = loadDataset();
+  return [...ds.accountHeads].sort((a, b) => a.name.localeCompare(b.name, "bn"));
+}
+
+/** Create a new account head (expense type). Returns the new id. */
+export function createAccountHead(
+  name: string,
+  type: AccountHead["type"],
+  recurringMonthly: boolean
+): { ok: boolean; error?: string; id?: number } {
+  const ds = loadDataset();
+  const trimmed = name.trim();
+  if (!trimmed) return { ok: false, error: "Name is required" };
+  // prevent exact-duplicate names (case-insensitive)
+  const dup = ds.accountHeads.some(
+    (a) => a.name.toLowerCase() === trimmed.toLowerCase()
+  );
+  if (dup) return { ok: false, error: `An account head named "${trimmed}" already exists` };
+  const id = S.nextAccountHeadId++;
+  ds.accountHeads.push({ id, name: trimmed, type, recurringMonthly });
+  return { ok: true, id };
+}
+
+/** Edit an existing account head (rename, change type, toggle recurring). */
+export function updateAccountHead(
+  id: number,
+  name: string,
+  type: AccountHead["type"],
+  recurringMonthly: boolean
+): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const head = ds.accountHeads.find((a) => a.id === id);
+  if (!head) return { ok: false, error: "Account head not found" };
+  const trimmed = name.trim();
+  if (!trimmed) return { ok: false, error: "Name is required" };
+  // prevent duplicate name on a DIFFERENT head
+  const dup = ds.accountHeads.some(
+    (a) => a.id !== id && a.name.toLowerCase() === trimmed.toLowerCase()
+  );
+  if (dup) return { ok: false, error: `Another account head named "${trimmed}" already exists` };
+  head.name = trimmed;
+  head.type = type;
+  head.recurringMonthly = recurringMonthly;
+  return { ok: true };
 }
 
 // ============================================================================
