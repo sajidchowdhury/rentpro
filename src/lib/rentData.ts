@@ -2621,15 +2621,22 @@ export function getClientLedgerStatement(
   const leases = ds.leases.filter((l) => l.tenantId === tenantId);
   const asOfKey = keyFromYM(asOfYear, asOfMonth);
 
-  // collect all relevant dated events: rent due (per month per lease) + collections
+  // Show a rolling 24-month window. Both rent-due AND payments are windowed
+  // to the SAME period (by rent month) so the running balance matches the
+  // tenant-ledger's outstanding calculation exactly. Previously, payments
+  // went back to the full history while rent-due was capped at 24 months —
+  // creating a hugely negative phantom balance (e.g. -210,000 for a tenant
+  // who's actually up to date).
+  const winFromK = asOfKey - 23;
+
   interface Ev { date: string; particulars: string; debit: number; credit: number; }
   const evs: Ev[] = [];
 
-  // rent dues (one per month per lease covering the month, up to as-of)
+  // rent dues (one per month per lease in the window)
   for (const l of leases) {
     const startK = dateKey(l.agreementStart);
     if (startK === null) continue;
-    const fromK = Math.max(startK, asOfKey - 23);
+    const fromK = Math.max(startK, winFromK);
     for (let k = fromK; k <= asOfKey; k++) {
       const y = String(Math.floor(k / 12));
       const m = MONTHS[k % 12];
@@ -2639,8 +2646,10 @@ export function getClientLedgerStatement(
       }
     }
   }
-  // collections (credits)
+  // collections in the window (by RENT month, so they pair with the dues)
   for (const c of ds.collections.filter((c) => c.tenantId === tenantId && c.status === "DONE")) {
+    const cKey = keyFromYM(c.rentYear, c.rentMonth);
+    if (cKey < winFromK || cKey > asOfKey) continue;
     const d = dateOnly(c.receiveDate) ?? `${c.rentYear}-${String(MONTHS.indexOf(c.rentMonth) + 1).padStart(2, "0")}-01`;
     evs.push({ date: d, particulars: `Payment — ${c.rentMonth} ${c.rentYear} — ৳${c.rent}`, debit: 0, credit: c.rent });
   }
