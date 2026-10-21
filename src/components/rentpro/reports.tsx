@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw,
+  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -41,7 +41,7 @@ interface YearlyMonth { month: string; rentCollected: number; income: number; ex
 interface Yearly { year: string; months: YearlyMonth[]; totalRentCollected: number; totalIncome: number; totalExpense: number; totalNet: number; }
 interface AccHeadRow { headId: number | null; head: string; type: string; income: number; expense: number; net: number; count: number; }
 interface AccHead { month: string; year: string; rows: AccHeadRow[]; totalIncome: number; totalExpense: number; totalNet: number; }
-interface LedgerEntry { date: string; particulars: string; debit: number; credit: number; balance: number; }
+interface LedgerEntry { date: string; particulars: string; debit: number; credit: number; balance: number; collectionId?: number | null; leaseId?: number | null; rentMonth?: string | null; rentYear?: string | null; waived?: boolean; }
 interface ClientLedger { tenant: { id: number; name: string; code: string; mobile: string | null; status: string; advanceBalance: number }; leases: Array<{ id: number; propertyName: string; unitName: string; rent: number }>; asOfMonth: string; asOfYear: string; openingAdvance: number; entries: LedgerEntry[]; closingOutstanding: number; }
 interface ClientDueRow { tenantId: number; name: string; code: string; mobile: string | null; status: string; outstandingTotal: number; outstandingCount: number; advanceBalance: number; }
 interface ClientDue { month: string; year: string; rows: ClientDueRow[]; totalOutstanding: number; totalTenants: number; }
@@ -297,7 +297,7 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
               </div>
             </CardHeader>
             <CardContent>
-              {ledgerLoading || !ledger ? <Skeleton className="h-80 rounded" /> : <LedgerTable data={ledger} />}
+              {ledgerLoading || !ledger ? <Skeleton className="h-80 rounded" /> : <LedgerTable data={ledger} onChanged={fetchLedger} />}
             </CardContent>
           </Card>
         </TabsContent>
@@ -517,7 +517,45 @@ function AccTable({ data }: { data: AccHead }) {
   );
 }
 
-function LedgerTable({ data }: { data: ClientLedger }) {
+function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () => void }) {
+  async function deleteEntry(e: LedgerEntry) {
+    if (!e.collectionId) return;
+    if (!confirm(`Delete this payment?\n"${e.particulars}"\nThis removes the invoice from the ledger.`)) return;
+    try {
+      const r = await fetch("/api/collect/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: e.collectionId }),
+      });
+      const d = await r.json();
+      if (d.ok) { toast.success("Payment deleted"); onChanged?.(); }
+      else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to delete"); }
+  }
+  async function waiveEntry(e: LedgerEntry) {
+    if (!e.leaseId || !e.rentMonth || !e.rentYear) return;
+    if (!confirm(`Waive rent for ${e.rentMonth} ${e.rentYear}?\nNo rent will be due for this month (tenant was gone, etc.).`)) return;
+    try {
+      const r = await fetch("/api/lease/waive", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leaseId: e.leaseId, month: e.rentMonth, year: e.rentYear }),
+      });
+      const d = await r.json();
+      if (d.ok) { toast.success(`Waived ${e.rentMonth} ${e.rentYear}`); onChanged?.(); }
+      else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to waive"); }
+  }
+  async function restoreEntry(e: LedgerEntry) {
+    if (!e.leaseId || !e.rentMonth || !e.rentYear) return;
+    try {
+      const r = await fetch("/api/lease/unwaive", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leaseId: e.leaseId, month: e.rentMonth, year: e.rentYear }),
+      });
+      const d = await r.json();
+      if (d.ok) { toast.success(`Restored ${e.rentMonth} ${e.rentYear}`); onChanged?.(); }
+      else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to restore"); }
+  }
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-4 text-sm rounded-md bg-muted/60 p-3">
@@ -534,16 +572,39 @@ function LedgerTable({ data }: { data: ClientLedger }) {
             <TableRow>
               <TableHead>Date</TableHead><TableHead>Particulars</TableHead>
               <TableHead className="text-right">Debit (due)</TableHead><TableHead className="text-right">Credit (paid)</TableHead><TableHead className="text-right">Balance</TableHead>
+              {onChanged && <TableHead className="text-right">Action</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {data.entries.map((e, i) => (
-              <TableRow key={i}>
+              <TableRow key={i} className={e.waived ? "opacity-50" : ""}>
                 <TableCell className="whitespace-nowrap">{shortDate(e.date)}</TableCell>
-                <TableCell className="max-w-[20rem]">{e.particulars}</TableCell>
+                <TableCell className="max-w-[20rem]">
+                  {e.particulars}
+                  {e.waived && <Badge variant="secondary" className="ml-2 text-[10px]">waived</Badge>}
+                </TableCell>
                 <TableCell className="text-right text-rose-600 dark:text-rose-400">{e.debit ? money(e.debit) : "—"}</TableCell>
                 <TableCell className="text-right text-emerald-600 dark:text-emerald-400">{e.credit ? money(e.credit) : "—"}</TableCell>
                 <TableCell className="text-right font-medium tabular-nums">{money(e.balance)}</TableCell>
+                {onChanged && (
+                  <TableCell className="text-right">
+                    {e.collectionId && (
+                      <Button size="icon" variant="ghost" className="size-7" onClick={() => deleteEntry(e)} title="Delete this payment">
+                        <Trash2 className="size-3.5 text-rose-500" />
+                      </Button>
+                    )}
+                    {!e.waived && e.debit > 0 && e.leaseId && (
+                      <Button size="icon" variant="ghost" className="size-7" onClick={() => waiveEntry(e)} title="Waive this month's rent (tenant was gone)">
+                        <Ban className="size-3.5 text-amber-500" />
+                      </Button>
+                    )}
+                    {e.waived && e.leaseId && (
+                      <Button size="icon" variant="ghost" className="size-7" onClick={() => restoreEntry(e)} title="Restore this month's rent">
+                        <RotateCcw className="size-3.5 text-emerald-500" />
+                      </Button>
+                    )}
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>

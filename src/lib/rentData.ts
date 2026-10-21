@@ -184,6 +184,10 @@ interface RentProStore {
   expenseRecs: ExpenseRec[] | null;
   generatedMonths: Set<string>;
   tenantAdjustments: Map<number, number>;
+  // (leaseId|month|year) entries where rent is waived — the tenant was gone
+  // that month (or another reason) so no rent is due. The tenant-ledger,
+  // client-ledger, and dashboard all skip these months when computing dues.
+  waivedMonths: Set<string>;
   nextCollectionId: number;
   nextTxnId: number;
   nextSettlementId: number;
@@ -206,6 +210,7 @@ function getStore(): RentProStore {
       expenseRecs: null,
       generatedMonths: new Set(),
       tenantAdjustments: new Map(),
+      waivedMonths: new Set(),
       nextCollectionId: 1_000_000,
       nextTxnId: 1_000_000,
       nextSettlementId: 1_000_000,
@@ -233,6 +238,7 @@ function getStore(): RentProStore {
   if (s.expenseRecs === undefined) s.expenseRecs = null;
   if (s.generatedMonths === undefined) s.generatedMonths = new Set();
   if (s.tenantAdjustments === undefined) s.tenantAdjustments = new Map();
+  if (s.waivedMonths === undefined) s.waivedMonths = new Set();
   if (s.nextCollectionId === undefined) s.nextCollectionId = 1_000_000;
   if (s.nextTxnId === undefined) s.nextTxnId = 1_000_000;
   if (s.organizations === undefined) s.organizations = null;
@@ -971,6 +977,8 @@ function countMissingMonths(ds: Dataset, lease: Lease, targetKey: number): numbe
   for (let k = from; k <= targetKey; k++) {
     const y = Math.floor(k / 12);
     const m = MONTHS[k % 12];
+    // skip waived months (tenant was gone — not counted as missing)
+    if (isLeaseMonthWaived(lease.id, m, String(y))) continue;
     const has = ds.collections.some(
       (c) =>
         c.leaseId === lease.id &&
@@ -1067,6 +1075,30 @@ export function getGeneratePreview(
 /** Prototype "generate" — marks the month as generated in memory. */
 export function markMonthGenerated(month: string, year: string): void {
   S.generatedMonths.add(`${year}|${month}`);
+}
+
+// --- waive / unwaive a month's rent due (tenant was gone, etc.) ---
+// Key format: `${leaseId}|${month}|${year}`
+function waiveKey(leaseId: number, month: string, year: string): string {
+  return `${leaseId}|${month}|${year}`;
+}
+export function waiveLeaseMonth(leaseId: number, month: string, year: string): void {
+  S.waivedMonths.add(waiveKey(leaseId, month, year));
+}
+export function unwaiaveLeaseMonth(leaseId: number, month: string, year: string): void {
+  S.waivedMonths.delete(waiveKey(leaseId, month, year));
+}
+export function isLeaseMonthWaived(leaseId: number, month: string, year: string): boolean {
+  return S.waivedMonths.has(waiveKey(leaseId, month, year));
+}
+
+// --- delete a collection record (a month's invoice/payment) by id ---
+export function deleteCollection(id: number): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const idx = ds.collections.findIndex((c) => c.id === id);
+  if (idx === -1) return { ok: false, error: "Collection not found" };
+  ds.collections.splice(idx, 1);
+  return { ok: true };
 }
 
 // ============================================================================
@@ -1287,6 +1319,8 @@ export function getTenantLedger(
     for (let k = fromK; k <= asOfKey; k++) {
       const y = Math.floor(k / 12);
       const m = MONTHS[k % 12];
+      // skip waived months (tenant was gone — no rent due)
+      if (isLeaseMonthWaived(l.id, m, String(y))) continue;
       const cols = ds.collections.filter(
         (c) =>
           c.leaseId === l.id && c.rentMonth === m && c.rentYear === String(y)
@@ -2599,6 +2633,14 @@ export interface LedgerEntry {
   debit: number; // tenant is charged (rent due)
   credit: number; // tenant paid (collection)
   balance: number; // running outstanding
+  // For payment entries: the collection id (so the UI can delete it).
+  // For rent-due entries: null (the due is derived from the lease, not a record).
+  collectionId?: number | null;
+  // For rent-due entries: the leaseId + month + year (so the UI can waive it).
+  leaseId?: number | null;
+  rentMonth?: string | null;
+  rentYear?: string | null;
+  waived?: boolean; // true if this month's due has been waived
 }
 export interface ClientLedgerStatement {
   tenant: { id: number; name: string; code: string; mobile: string | null; status: string; advanceBalance: number };
@@ -2629,10 +2671,10 @@ export function getClientLedgerStatement(
   // who's actually up to date).
   const winFromK = asOfKey - 23;
 
-  interface Ev { date: string; particulars: string; debit: number; credit: number; }
+  interface Ev { date: string; particulars: string; debit: number; credit: number; collectionId?: number | null; leaseId?: number | null; rentMonth?: string | null; rentYear?: string | null; waived?: boolean; }
   const evs: Ev[] = [];
 
-  // rent dues (one per month per lease in the window)
+  // rent dues (one per month per lease in the window) — SKIP waived months
   for (const l of leases) {
     const startK = dateKey(l.agreementStart);
     if (startK === null) continue;
@@ -2641,8 +2683,13 @@ export function getClientLedgerStatement(
       const y = String(Math.floor(k / 12));
       const m = MONTHS[k % 12];
       const due = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
-      if (due > 0) {
-        evs.push({ date: `${y}-${String((k % 12) + 1).padStart(2, "0")}-01`, particulars: `Rent due — ${m} ${y} — ${l.unitName}`, debit: due, credit: 0 });
+      if (due <= 0) continue;
+      const waived = isLeaseMonthWaived(l.id, m, y);
+      if (waived) {
+        // show a waived row (debit 0) so the manager sees it was waived
+        evs.push({ date: `${y}-${String((k % 12) + 1).padStart(2, "0")}-01`, particulars: `Rent waived — ${m} ${y} — ${l.unitName}`, debit: 0, credit: 0, leaseId: l.id, rentMonth: m, rentYear: y, waived: true });
+      } else {
+        evs.push({ date: `${y}-${String((k % 12) + 1).padStart(2, "0")}-01`, particulars: `Rent due — ${m} ${y} — ${l.unitName}`, debit: due, credit: 0, leaseId: l.id, rentMonth: m, rentYear: y });
       }
     }
   }
@@ -2651,7 +2698,7 @@ export function getClientLedgerStatement(
     const cKey = keyFromYM(c.rentYear, c.rentMonth);
     if (cKey < winFromK || cKey > asOfKey) continue;
     const d = dateOnly(c.receiveDate) ?? `${c.rentYear}-${String(MONTHS.indexOf(c.rentMonth) + 1).padStart(2, "0")}-01`;
-    evs.push({ date: d, particulars: `Payment — ${c.rentMonth} ${c.rentYear} — ৳${c.rent}`, debit: 0, credit: c.rent });
+    evs.push({ date: d, particulars: `Payment — ${c.rentMonth} ${c.rentYear} — ৳${c.rent}`, debit: 0, credit: c.rent, collectionId: c.id, leaseId: c.leaseId, rentMonth: c.rentMonth, rentYear: c.rentYear });
   }
 
   evs.sort((a, b) => a.date.localeCompare(b.date));
