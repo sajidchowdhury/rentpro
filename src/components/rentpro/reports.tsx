@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw,
+  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw, Check, ChevronsUpDown, Search,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,9 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter,
 } from "@/components/ui/table";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Checkbox } from "@/components/ui/checkbox";
 import { money, shortDate } from "@/lib/format";
 import { usePagination } from "@/lib/use-pagination";
 import { Pager } from "@/components/rentpro/pager";
@@ -122,7 +125,9 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
     fetch("/api/tenants-list?month=" + encodeURIComponent(month) + "&year=" + encodeURIComponent(year))
       .then((r) => r.json())
       .then((d) => {
-        const ts: TenantOpt[] = (d.tenants ?? []).map((t: any) => ({ id: t.id, name: t.name, code: t.code }));
+        const ts: TenantOpt[] = (d.tenants ?? [])
+          .map((t: any) => ({ id: t.id, name: t.name, code: t.code }))
+          .sort((a: TenantOpt, b: TenantOpt) => a.code.localeCompare(b.code, undefined, { numeric: true }));
         setTenants(ts);
         if (ts.length > 0 && ledgerId === null) setLedgerId(ts[0].id);
       })
@@ -297,14 +302,41 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
                   <CardDescription>Per-tenant statement: rent due vs paid, running outstanding</CardDescription>
                 </div>
                 <div className="flex flex-wrap items-end gap-2">
-                  <div className="w-[220px]">
-                    <Label className="text-xs">Tenant</Label>
-                    <Select value={String(ledgerId ?? "")} onValueChange={(v) => { setLedgerId(Number(v)); setLedger(null); setLedgerFromMonth(""); setLedgerFromYear(""); }}>
-                      <SelectTrigger><SelectValue placeholder="Select tenant" /></SelectTrigger>
-                      <SelectContent>
-                        {tenants.map((t) => <SelectItem key={t.id} value={String(t.id)}>{t.code} · {t.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                  <div className="w-[240px]">
+                    <Label className="text-xs">Tenant (search by code or name)</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
+                          {ledgerId ? (() => {
+                            const t = tenants.find((x) => x.id === ledgerId);
+                            return t ? `${t.code} · ${t.name}` : "Select tenant";
+                          })() : "Select tenant"}
+                          <ChevronsUpDown className="size-4 opacity-50 shrink-0" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[300px] p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search code or name…" />
+                          <CommandList>
+                            <CommandEmpty>No tenant found.</CommandEmpty>
+                            <CommandGroup>
+                              {tenants.map((t) => (
+                                <CommandItem
+                                  key={t.id}
+                                  value={`${t.code} ${t.name}`}
+                                  onSelect={() => { setLedgerId(t.id); setLedger(null); setLedgerFromMonth(""); setLedgerFromYear(""); }}
+                                  className="flex items-center gap-2"
+                                >
+                                  <Check className={`size-4 ${ledgerId === t.id ? "opacity-100" : "opacity-0"}`} />
+                                  <span className="font-mono text-xs">{t.code}</span>
+                                  <span className="truncate">{t.name}</span>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
                   </div>
                   <div className="w-[150px]">
                     <Label className="text-xs">From month</Label>
@@ -552,6 +584,23 @@ function AccTable({ data }: { data: AccHead }) {
 
 function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () => void }) {
   const [showDeleted, setShowDeleted] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const toggleRow = (i: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
+  const toggleAll = () => {
+    setSelected((prev) => {
+      if (prev.size === data.entries.length) return new Set();
+      return new Set(data.entries.map((_, i) => i));
+    });
+  };
+
   async function deleteEntry(e: LedgerEntry) {
     if (!e.collectionId) return;
     if (!confirm(`Delete this payment?\n"${e.particulars}"\nThis removes the invoice from the ledger.`)) return;
@@ -589,6 +638,37 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
       else toast.error(d.error ?? "Failed");
     } catch { toast.error("Failed to restore"); }
   }
+  async function bulkDelete() {
+    const entries = [...selected].map((i) => data.entries[i]).filter(Boolean);
+    const payments = entries.filter((e) => e.collectionId);
+    const dues = entries.filter((e) => e.leaseId && e.rentMonth && e.rentYear && e.debit > 0);
+    if (payments.length === 0 && dues.length === 0) return;
+    if (!confirm(`Delete ${entries.length} selected row(s)?\n• ${payments.length} payment(s) will be deleted\n• ${dues.length} rent due(s) will be removed (waived)\nThis cannot be undone from the UI (restore via the deleted-months panel).`)) return;
+    setBulkBusy(true);
+    let ok = 0, fail = 0;
+    try {
+      // delete payments
+      for (const e of payments) {
+        try {
+          const r = await fetch("/api/collect/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: e.collectionId }) });
+          const d = await r.json();
+          if (d.ok) ok++; else fail++;
+        } catch { fail++; }
+      }
+      // waive rent dues
+      for (const e of dues) {
+        try {
+          const r = await fetch("/api/lease/waive", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leaseId: e.leaseId, month: e.rentMonth, year: e.rentYear }) });
+          const d = await r.json();
+          if (d.ok) ok++; else fail++;
+        } catch { fail++; }
+      }
+      setSelected(new Set());
+      if (fail > 0) toast.warning(`${ok} deleted, ${fail} failed`);
+      else toast.success(`${ok} row(s) deleted`);
+      onChanged?.();
+    } finally { setBulkBusy(false); }
+  }
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-4 text-sm rounded-md bg-muted/60 p-3">
@@ -618,11 +698,27 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
         </div>
       )}
 
+      {/* bulk action bar */}
+      {selected.size > 0 && onChanged && (
+        <div className="flex items-center gap-3 rounded-md border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20 px-4 py-2.5">
+          <span className="text-sm font-medium text-amber-800 dark:text-amber-200">
+            {selected.size} row{selected.size > 1 ? "s" : ""} selected
+            ({[...selected].map((i) => data.entries[i]).filter((e) => e?.collectionId).length} payment
+            · {[...selected].map((i) => data.entries[i]).filter((e) => e?.debit > 0 && e?.leaseId).length} rent-due)
+          </span>
+          <Button size="sm" variant="destructive" onClick={bulkDelete} disabled={bulkBusy} className="ml-auto">
+            {bulkBusy ? "Deleting…" : <><Trash2 className="size-3.5" /> Delete selected</>}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Cancel</Button>
+        </div>
+      )}
+
       <div className="overflow-x-auto">
       <div className="max-h-[22rem] overflow-y-auto">
         <Table>
           <TableHeader>
             <TableRow>
+              {onChanged && <TableHead className="w-8"><Checkbox checked={selected.size === data.entries.length && data.entries.length > 0} onCheckedChange={toggleAll} aria-label="Select all" /></TableHead>}
               <TableHead>Date</TableHead><TableHead>Particulars</TableHead>
               <TableHead className="text-right">Debit (due)</TableHead><TableHead className="text-right">Credit (paid)</TableHead><TableHead className="text-right">Balance</TableHead>
               {onChanged && <TableHead className="text-right">Action</TableHead>}
@@ -631,6 +727,7 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
           <TableBody>
             {data.entries.map((e, i) => (
               <TableRow key={i}>
+                {onChanged && <TableCell className="w-8"><Checkbox checked={selected.has(i)} onCheckedChange={() => toggleRow(i)} aria-label="Select row" /></TableCell>}
                 <TableCell className="whitespace-nowrap">{shortDate(e.date)}</TableCell>
                 <TableCell className="max-w-[20rem]">{e.particulars}</TableCell>
                 <TableCell className="text-right text-rose-600 dark:text-rose-400">{e.debit ? money(e.debit) : "—"}</TableCell>
