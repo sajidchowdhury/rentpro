@@ -2647,11 +2647,13 @@ export interface ClientLedgerStatement {
   leases: Array<{ id: number; propertyName: string; unitName: string; rent: number }>;
   asOfMonth: string;
   asOfYear: string;
-  // The actual start month used (either the user's pick or the default = earliest lease start / first collection)
   fromMonth: string;
   fromYear: string;
   openingAdvance: number;
   entries: LedgerEntry[];
+  // Months whose rent due has been deleted (waived) — the rows are NOT in
+  // entries[] (they're hidden). The UI shows a "restore" option for these.
+  deletedMonths: Array<{ leaseId: number; month: string; year: string; unitName: string }>;
   closingOutstanding: number;
 }
 
@@ -2694,7 +2696,11 @@ export function getClientLedgerStatement(
   interface Ev { date: string; particulars: string; debit: number; credit: number; collectionId?: number | null; leaseId?: number | null; rentMonth?: string | null; rentYear?: string | null; waived?: boolean; }
   const evs: Ev[] = [];
 
-  // rent dues (one per month per lease in the window) — SKIP waived months
+  // rent dues (one per month per lease in the window) — waived months are
+  // DELETED (not shown as a row). They're returned in deletedMonths[] so the
+  // UI can offer a restore. This matches the "delete payment" UX: the row
+  // disappears entirely.
+  const deletedMonths: Array<{ leaseId: number; month: string; year: string; unitName: string }> = [];
   for (const l of leases) {
     const startK = dateKey(l.agreementStart);
     if (startK === null) continue;
@@ -2704,12 +2710,12 @@ export function getClientLedgerStatement(
       const m = MONTHS[k % 12];
       const due = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
       if (due <= 0) continue;
-      const waived = isLeaseMonthWaived(l.id, m, y);
-      if (waived) {
-        evs.push({ date: `${y}-${String((k % 12) + 1).padStart(2, "0")}-01`, particulars: `Rent waived — ${m} ${y} — ${l.unitName}`, debit: 0, credit: 0, leaseId: l.id, rentMonth: m, rentYear: y, waived: true });
-      } else {
-        evs.push({ date: `${y}-${String((k % 12) + 1).padStart(2, "0")}-01`, particulars: `Rent due — ${m} ${y} — ${l.unitName}`, debit: due, credit: 0, leaseId: l.id, rentMonth: m, rentYear: y });
+      if (isLeaseMonthWaived(l.id, m, y)) {
+        // deleted — skip the row, track it for restoration
+        deletedMonths.push({ leaseId: l.id, month: m, year: y, unitName: l.unitName });
+        continue;
       }
+      evs.push({ date: `${y}-${String((k % 12) + 1).padStart(2, "0")}-01`, particulars: `Rent due — ${m} ${y} — ${l.unitName}`, debit: due, credit: 0, leaseId: l.id, rentMonth: m, rentYear: y });
     }
   }
   // collections in the window (by RENT month, so they pair with the dues)
@@ -2743,6 +2749,7 @@ export function getClientLedgerStatement(
     fromYear: fromYearOut,
     openingAdvance: tenantAdvanceBalance(tenantId, ds),
     entries,
+    deletedMonths,
     closingOutstanding: running,
   };
 }

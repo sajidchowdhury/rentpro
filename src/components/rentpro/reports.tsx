@@ -42,7 +42,7 @@ interface Yearly { year: string; months: YearlyMonth[]; totalRentCollected: numb
 interface AccHeadRow { headId: number | null; head: string; type: string; income: number; expense: number; net: number; count: number; }
 interface AccHead { month: string; year: string; rows: AccHeadRow[]; totalIncome: number; totalExpense: number; totalNet: number; }
 interface LedgerEntry { date: string; particulars: string; debit: number; credit: number; balance: number; collectionId?: number | null; leaseId?: number | null; rentMonth?: string | null; rentYear?: string | null; waived?: boolean; }
-interface ClientLedger { tenant: { id: number; name: string; code: string; mobile: string | null; status: string; advanceBalance: number }; leases: Array<{ id: number; propertyName: string; unitName: string; rent: number }>; asOfMonth: string; asOfYear: string; fromMonth: string; fromYear: string; openingAdvance: number; entries: LedgerEntry[]; closingOutstanding: number; }
+interface ClientLedger { tenant: { id: number; name: string; code: string; mobile: string | null; status: string; advanceBalance: number }; leases: Array<{ id: number; propertyName: string; unitName: string; rent: number }>; asOfMonth: string; asOfYear: string; fromMonth: string; fromYear: string; openingAdvance: number; entries: LedgerEntry[]; deletedMonths: Array<{ leaseId: number; month: string; year: string; unitName: string }>; closingOutstanding: number; }
 interface ClientDueRow { tenantId: number; name: string; code: string; mobile: string | null; status: string; outstandingTotal: number; outstandingCount: number; advanceBalance: number; }
 interface ClientDue { month: string; year: string; rows: ClientDueRow[]; totalOutstanding: number; totalTenants: number; }
 interface TenantOpt { id: number; name: string; code: string; }
@@ -551,6 +551,7 @@ function AccTable({ data }: { data: AccHead }) {
 }
 
 function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () => void }) {
+  const [showDeleted, setShowDeleted] = useState(false);
   async function deleteEntry(e: LedgerEntry) {
     if (!e.collectionId) return;
     if (!confirm(`Delete this payment?\n"${e.particulars}"\nThis removes the invoice from the ledger.`)) return;
@@ -564,28 +565,27 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
       else toast.error(d.error ?? "Failed");
     } catch { toast.error("Failed to delete"); }
   }
-  async function waiveEntry(e: LedgerEntry) {
+  async function deleteDue(e: LedgerEntry) {
     if (!e.leaseId || !e.rentMonth || !e.rentYear) return;
-    if (!confirm(`Waive rent for ${e.rentMonth} ${e.rentYear}?\nNo rent will be due for this month (tenant was gone, etc.).`)) return;
+    if (!confirm(`Delete this rent due?\n"${e.particulars}"\nThe due will be removed from the ledger (tenant was gone, etc.).`)) return;
     try {
       const r = await fetch("/api/lease/waive", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ leaseId: e.leaseId, month: e.rentMonth, year: e.rentYear }),
       });
       const d = await r.json();
-      if (d.ok) { toast.success(`Waived ${e.rentMonth} ${e.rentYear}`); onChanged?.(); }
+      if (d.ok) { toast.success(`Deleted due for ${e.rentMonth} ${e.rentYear}`); onChanged?.(); }
       else toast.error(d.error ?? "Failed");
-    } catch { toast.error("Failed to waive"); }
+    } catch { toast.error("Failed to delete"); }
   }
-  async function restoreEntry(e: LedgerEntry) {
-    if (!e.leaseId || !e.rentMonth || !e.rentYear) return;
+  async function restoreDue(dm: { leaseId: number; month: string; year: string }) {
     try {
       const r = await fetch("/api/lease/unwaive", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leaseId: e.leaseId, month: e.rentMonth, year: e.rentYear }),
+        body: JSON.stringify({ leaseId: dm.leaseId, month: dm.month, year: dm.year }),
       });
       const d = await r.json();
-      if (d.ok) { toast.success(`Restored ${e.rentMonth} ${e.rentYear}`); onChanged?.(); }
+      if (d.ok) { toast.success(`Restored ${dm.month} ${dm.year}`); onChanged?.(); }
       else toast.error(d.error ?? "Failed");
     } catch { toast.error("Failed to restore"); }
   }
@@ -597,7 +597,27 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
         <div><span className="text-muted-foreground">Advance held:</span> <span className="font-medium text-emerald-600 dark:text-emerald-400">{money(data.openingAdvance)}</span></div>
         <div><span className="text-muted-foreground">Closing outstanding:</span> <span className="font-bold text-rose-600 dark:text-rose-400">{money(data.closingOutstanding)}</span></div>
         <div><span className="text-muted-foreground">Leases:</span> {data.leases.length}</div>
+        {data.deletedMonths.length > 0 && (
+          <button onClick={() => setShowDeleted(!showDeleted)} className="text-xs text-amber-600 dark:text-amber-400 hover:underline ml-auto">
+            {data.deletedMonths.length} month{data.deletedMonths.length > 1 ? "s" : ""} deleted — {showDeleted ? "hide" : "show & restore"}
+          </button>
+        )}
       </div>
+
+      {/* deleted months (hidden by default — toggle to show + restore) */}
+      {showDeleted && data.deletedMonths.length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20 p-3">
+          <div className="text-xs font-medium text-amber-700 dark:text-amber-300 mb-2">Deleted rent due months (restore to bring back the due)</div>
+          <div className="flex flex-wrap gap-2">
+            {data.deletedMonths.map((dm, i) => (
+              <button key={i} onClick={() => restoreDue(dm)} className="text-[11px] px-2 py-1 rounded-md bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200 hover:bg-amber-200 dark:hover:bg-amber-900 flex items-center gap-1" title={`${dm.unitName}`}>
+                <RotateCcw className="size-3" /> {dm.month.slice(0, 3)} {dm.year}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="overflow-x-auto">
       <div className="max-h-[22rem] overflow-y-auto">
         <Table>
@@ -610,12 +630,9 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
           </TableHeader>
           <TableBody>
             {data.entries.map((e, i) => (
-              <TableRow key={i} className={e.waived ? "opacity-50" : ""}>
+              <TableRow key={i}>
                 <TableCell className="whitespace-nowrap">{shortDate(e.date)}</TableCell>
-                <TableCell className="max-w-[20rem]">
-                  {e.particulars}
-                  {e.waived && <Badge variant="secondary" className="ml-2 text-[10px]">waived</Badge>}
-                </TableCell>
+                <TableCell className="max-w-[20rem]">{e.particulars}</TableCell>
                 <TableCell className="text-right text-rose-600 dark:text-rose-400">{e.debit ? money(e.debit) : "—"}</TableCell>
                 <TableCell className="text-right text-emerald-600 dark:text-emerald-400">{e.credit ? money(e.credit) : "—"}</TableCell>
                 <TableCell className="text-right font-medium tabular-nums">{money(e.balance)}</TableCell>
@@ -626,14 +643,9 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
                         <Trash2 className="size-3.5 text-rose-500" />
                       </Button>
                     )}
-                    {!e.waived && e.debit > 0 && e.leaseId && (
-                      <Button size="icon" variant="ghost" className="size-7" onClick={() => waiveEntry(e)} title="Waive this month's rent (tenant was gone)">
-                        <Ban className="size-3.5 text-amber-500" />
-                      </Button>
-                    )}
-                    {e.waived && e.leaseId && (
-                      <Button size="icon" variant="ghost" className="size-7" onClick={() => restoreEntry(e)} title="Restore this month's rent">
-                        <RotateCcw className="size-3.5 text-emerald-500" />
+                    {e.debit > 0 && e.leaseId && (
+                      <Button size="icon" variant="ghost" className="size-7" onClick={() => deleteDue(e)} title="Delete this month's rent due">
+                        <Trash2 className="size-3.5 text-amber-500" />
                       </Button>
                     )}
                   </TableCell>
