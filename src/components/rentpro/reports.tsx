@@ -42,7 +42,7 @@ interface Yearly { year: string; months: YearlyMonth[]; totalRentCollected: numb
 interface AccHeadRow { headId: number | null; head: string; type: string; income: number; expense: number; net: number; count: number; }
 interface AccHead { month: string; year: string; rows: AccHeadRow[]; totalIncome: number; totalExpense: number; totalNet: number; }
 interface LedgerEntry { date: string; particulars: string; debit: number; credit: number; balance: number; collectionId?: number | null; leaseId?: number | null; rentMonth?: string | null; rentYear?: string | null; waived?: boolean; }
-interface ClientLedger { tenant: { id: number; name: string; code: string; mobile: string | null; status: string; advanceBalance: number }; leases: Array<{ id: number; propertyName: string; unitName: string; rent: number }>; asOfMonth: string; asOfYear: string; openingAdvance: number; entries: LedgerEntry[]; closingOutstanding: number; }
+interface ClientLedger { tenant: { id: number; name: string; code: string; mobile: string | null; status: string; advanceBalance: number }; leases: Array<{ id: number; propertyName: string; unitName: string; rent: number }>; asOfMonth: string; asOfYear: string; fromMonth: string; fromYear: string; openingAdvance: number; entries: LedgerEntry[]; closingOutstanding: number; }
 interface ClientDueRow { tenantId: number; name: string; code: string; mobile: string | null; status: string; outstandingTotal: number; outstandingCount: number; advanceBalance: number; }
 interface ClientDue { month: string; year: string; rows: ClientDueRow[]; totalOutstanding: number; totalTenants: number; }
 interface TenantOpt { id: number; name: string; code: string; }
@@ -97,6 +97,9 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
   const [ledgerId, setLedgerId] = useState<number | null>(null);
   const [ledger, setLedger] = useState<ClientLedger | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
+  // "from" month for the client ledger (defaults to "" = let the API pick the earliest)
+  const [ledgerFromMonth, setLedgerFromMonth] = useState("");
+  const [ledgerFromYear, setLedgerFromYear] = useState("");
 
   // client due
   const [due, setDue] = useState<ClientDue | null>(null);
@@ -160,11 +163,23 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
     if (ledgerId === null || !month || !year) return;
     setLedgerLoading(true);
     try {
-      const r = await fetch(`/api/report/client-ledger?tenantId=${ledgerId}&month=${encodeURIComponent(month)}&year=${encodeURIComponent(year)}`);
-      setLedger(await r.json());
+      const params = new URLSearchParams({ tenantId: String(ledgerId), month, year });
+      if (ledgerFromMonth && ledgerFromYear) {
+        params.set("fromMonth", ledgerFromMonth);
+        params.set("fromYear", ledgerFromYear);
+      }
+      const r = await fetch(`/api/report/client-ledger?${params}`);
+      const data = await r.json();
+      setLedger(data);
+      // sync the "from" selector to what the API actually used (so the
+      // default earliest month is shown when the user hasn't picked one)
+      if (data?.fromMonth && data?.fromYear && !ledgerFromMonth) {
+        setLedgerFromMonth(data.fromMonth);
+        setLedgerFromYear(data.fromYear);
+      }
     } catch { toast.error("Failed to load ledger"); }
     finally { setLedgerLoading(false); }
-  }, [ledgerId, month, year]);
+  }, [ledgerId, month, year, ledgerFromMonth, ledgerFromYear]);
 
   const fetchDue = useCallback(async () => {
     if (!month || !year) return;
@@ -281,13 +296,31 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
                   <CardTitle className="text-base">Client Ledger (ভাড়াটিয়ার লেজার)</CardTitle>
                   <CardDescription>Per-tenant statement: rent due vs paid, running outstanding</CardDescription>
                 </div>
-                <div className="flex items-end gap-2">
-                  <div className="w-[260px]">
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="w-[220px]">
                     <Label className="text-xs">Tenant</Label>
-                    <Select value={String(ledgerId ?? "")} onValueChange={(v) => { setLedgerId(Number(v)); setLedger(null); }}>
+                    <Select value={String(ledgerId ?? "")} onValueChange={(v) => { setLedgerId(Number(v)); setLedger(null); setLedgerFromMonth(""); setLedgerFromYear(""); }}>
                       <SelectTrigger><SelectValue placeholder="Select tenant" /></SelectTrigger>
                       <SelectContent>
                         {tenants.map((t) => <SelectItem key={t.id} value={String(t.id)}>{t.code} · {t.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="w-[150px]">
+                    <Label className="text-xs">From month</Label>
+                    <Select value={ledgerFromMonth} onValueChange={(v) => { setLedgerFromMonth(v); setLedger(null); }}>
+                      <SelectTrigger><SelectValue placeholder="Start" /></SelectTrigger>
+                      <SelectContent>
+                        {MONTHS.map((m) => <SelectItem key={m} value={m}>{m.slice(0, 3)}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="w-[100px]">
+                    <Label className="text-xs">From year</Label>
+                    <Select value={ledgerFromYear} onValueChange={(v) => { setLedgerFromYear(v); setLedger(null); }}>
+                      <SelectTrigger><SelectValue placeholder="Year" /></SelectTrigger>
+                      <SelectContent>
+                        {["2023","2024","2025","2026","2027"].map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>

@@ -2647,6 +2647,9 @@ export interface ClientLedgerStatement {
   leases: Array<{ id: number; propertyName: string; unitName: string; rent: number }>;
   asOfMonth: string;
   asOfYear: string;
+  // The actual start month used (either the user's pick or the default = earliest lease start / first collection)
+  fromMonth: string;
+  fromYear: string;
   openingAdvance: number;
   entries: LedgerEntry[];
   closingOutstanding: number;
@@ -2655,7 +2658,9 @@ export interface ClientLedgerStatement {
 export function getClientLedgerStatement(
   tenantId: number,
   asOfMonth: string,
-  asOfYear: string
+  asOfYear: string,
+  fromMonth?: string,
+  fromYear?: string
 ): ClientLedgerStatement | null {
   const ds = loadDataset();
   const tenant = ds.tenants.find((t) => t.id === tenantId);
@@ -2663,13 +2668,28 @@ export function getClientLedgerStatement(
   const leases = ds.leases.filter((l) => l.tenantId === tenantId);
   const asOfKey = keyFromYM(asOfYear, asOfMonth);
 
-  // Show a rolling 24-month window. Both rent-due AND payments are windowed
-  // to the SAME period (by rent month) so the running balance matches the
-  // tenant-ledger's outstanding calculation exactly. Previously, payments
-  // went back to the full history while rent-due was capped at 24 months —
-  // creating a hugely negative phantom balance (e.g. -210,000 for a tenant
-  // who's actually up to date).
-  const winFromK = asOfKey - 23;
+  // Default the "from" month to the tenant's FIRST COLLECTION month — the
+  // actual start of their payment history. This avoids phantom dues from a
+  // lease agreementStart that's set before the first real payment (e.g. the
+  // agreement was signed in Jan but the tenant's first rent was February).
+  // The user can override with an explicit fromMonth/fromYear.
+  let fromKey: number;
+  if (fromMonth && fromYear) {
+    fromKey = keyFromYM(fromYear, fromMonth);
+  } else {
+    let earliest = asOfKey;
+    for (const c of ds.collections) {
+      if (c.tenantId !== tenantId) continue;
+      const ck = keyFromYM(c.rentYear, c.rentMonth);
+      if (ck < earliest) earliest = ck;
+    }
+    fromKey = earliest;
+  }
+  // clamp: don't go before the earliest lease start, and don't go past as-of
+  const leaseStarts = leases.map((l) => dateKey(l.agreementStart)).filter((k): k is number => k !== null);
+  const minLeaseStart = leaseStarts.length ? Math.min(...leaseStarts) : fromKey;
+  if (fromKey < minLeaseStart) fromKey = minLeaseStart;
+  if (fromKey > asOfKey) fromKey = asOfKey;
 
   interface Ev { date: string; particulars: string; debit: number; credit: number; collectionId?: number | null; leaseId?: number | null; rentMonth?: string | null; rentYear?: string | null; waived?: boolean; }
   const evs: Ev[] = [];
@@ -2678,7 +2698,7 @@ export function getClientLedgerStatement(
   for (const l of leases) {
     const startK = dateKey(l.agreementStart);
     if (startK === null) continue;
-    const fromK = Math.max(startK, winFromK);
+    const fromK = Math.max(startK, fromKey);
     for (let k = fromK; k <= asOfKey; k++) {
       const y = String(Math.floor(k / 12));
       const m = MONTHS[k % 12];
@@ -2686,7 +2706,6 @@ export function getClientLedgerStatement(
       if (due <= 0) continue;
       const waived = isLeaseMonthWaived(l.id, m, y);
       if (waived) {
-        // show a waived row (debit 0) so the manager sees it was waived
         evs.push({ date: `${y}-${String((k % 12) + 1).padStart(2, "0")}-01`, particulars: `Rent waived — ${m} ${y} — ${l.unitName}`, debit: 0, credit: 0, leaseId: l.id, rentMonth: m, rentYear: y, waived: true });
       } else {
         evs.push({ date: `${y}-${String((k % 12) + 1).padStart(2, "0")}-01`, particulars: `Rent due — ${m} ${y} — ${l.unitName}`, debit: due, credit: 0, leaseId: l.id, rentMonth: m, rentYear: y });
@@ -2696,7 +2715,7 @@ export function getClientLedgerStatement(
   // collections in the window (by RENT month, so they pair with the dues)
   for (const c of ds.collections.filter((c) => c.tenantId === tenantId && c.status === "DONE")) {
     const cKey = keyFromYM(c.rentYear, c.rentMonth);
-    if (cKey < winFromK || cKey > asOfKey) continue;
+    if (cKey < fromKey || cKey > asOfKey) continue;
     const d = dateOnly(c.receiveDate) ?? `${c.rentYear}-${String(MONTHS.indexOf(c.rentMonth) + 1).padStart(2, "0")}-01`;
     evs.push({ date: d, particulars: `Payment — ${c.rentMonth} ${c.rentYear} — ৳${c.rent}`, debit: 0, credit: c.rent, collectionId: c.id, leaseId: c.leaseId, rentMonth: c.rentMonth, rentYear: c.rentYear });
   }
@@ -2709,6 +2728,9 @@ export function getClientLedgerStatement(
     return { ...e, balance: running };
   });
 
+  const fromMonthOut = MONTHS[fromKey % 12];
+  const fromYearOut = String(Math.floor(fromKey / 12));
+
   return {
     tenant: {
       id: tenant.id, name: tenant.name, code: tenant.code,
@@ -2717,6 +2739,8 @@ export function getClientLedgerStatement(
     },
     leases: leases.map((l) => ({ id: l.id, propertyName: l.propertyName, unitName: l.unitName, rent: l.rent })),
     asOfMonth, asOfYear,
+    fromMonth: fromMonthOut,
+    fromYear: fromYearOut,
     openingAdvance: tenantAdvanceBalance(tenantId, ds),
     entries,
     closingOutstanding: running,
