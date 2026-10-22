@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw, Check, ChevronsUpDown, Search,
+  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw, Check, ChevronsUpDown, Search, Pencil,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,9 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { money, shortDate } from "@/lib/format";
 import { usePagination } from "@/lib/use-pagination";
 import { Pager } from "@/components/rentpro/pager";
@@ -586,6 +589,17 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
   const [showDeleted, setShowDeleted] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  // edit payment dialog
+  const [editOpen, setEditOpen] = useState(false);
+  const [editEntry, setEditEntry] = useState<LedgerEntry | null>(null);
+  const [eRent, setERent] = useState(0);
+  const [eGas, setEGas] = useState(0);
+  const [eService, setEService] = useState(0);
+  const [eOther, setEOther] = useState(0);
+  const [eMonth, setEMonth] = useState("");
+  const [eYear, setEYear] = useState("");
+  const [eDate, setEDate] = useState("");
+  const [eBusy, setEBusy] = useState(false);
 
   const toggleRow = (i: number) => {
     setSelected((prev) => {
@@ -613,6 +627,36 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
       if (d.ok) { toast.success("Payment deleted"); onChanged?.(); }
       else toast.error(d.error ?? "Failed");
     } catch { toast.error("Failed to delete"); }
+  }
+  function openEditPayment(e: LedgerEntry) {
+    if (!e.collectionId) return;
+    setEditEntry(e);
+    setERent(e.credit || 0);
+    setEGas(0); setEService(0); setEOther(0);
+    setEMonth(e.rentMonth || "");
+    setEYear(e.rentYear || "");
+    setEDate(e.date || "");
+    setEditOpen(true);
+  }
+  async function submitEditPayment() {
+    if (!editEntry?.collectionId) return;
+    setEBusy(true);
+    try {
+      const r = await fetch("/api/collect/update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editEntry.collectionId,
+          rent: eRent,
+          rentMonth: eMonth,
+          rentYear: eYear,
+          receiveDate: eDate || null,
+        }),
+      });
+      const d = await r.json();
+      if (d.ok) { toast.success("Payment updated"); setEditOpen(false); onChanged?.(); }
+      else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to update"); }
+    finally { setEBusy(false); }
   }
   async function deleteDue(e: LedgerEntry) {
     if (!e.leaseId || !e.rentMonth || !e.rentYear) return;
@@ -736,9 +780,14 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
                 {onChanged && (
                   <TableCell className="text-right">
                     {e.collectionId && (
-                      <Button size="icon" variant="ghost" className="size-7" onClick={() => deleteEntry(e)} title="Delete this payment">
-                        <Trash2 className="size-3.5 text-rose-500" />
-                      </Button>
+                      <>
+                        <Button size="icon" variant="ghost" className="size-7" onClick={() => openEditPayment(e)} title="Edit this payment">
+                          <Pencil className="size-3.5 text-sky-500" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="size-7" onClick={() => deleteEntry(e)} title="Delete this payment">
+                          <Trash2 className="size-3.5 text-rose-500" />
+                        </Button>
+                      </>
                     )}
                     {e.debit > 0 && e.leaseId && (
                       <Button size="icon" variant="ghost" className="size-7" onClick={() => deleteDue(e)} title="Delete this month's rent due">
@@ -753,6 +802,54 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
         </Table>
       </div>
       </div>
+
+      {/* Edit Payment dialog */}
+      <Dialog open={editOpen} onOpenChange={(o) => { if (!o) setEditOpen(false); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Pencil className="size-4" /> Edit Payment</DialogTitle>
+            <DialogDescription>
+              {editEntry ? editEntry.particulars : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Amount (৳)</Label>
+                <Input type="number" value={eRent} onChange={(e) => setERent(Number(e.target.value))} />
+              </div>
+              <div>
+                <Label className="text-xs">Receive date</Label>
+                <Input type="date" value={eDate} onChange={(e) => setEDate(e.target.value)} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Rent month</Label>
+                <Select value={eMonth} onValueChange={setEMonth}>
+                  <SelectTrigger><SelectValue placeholder="Month" /></SelectTrigger>
+                  <SelectContent>
+                    {MONTHS.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Rent year</Label>
+                <Input type="number" value={eYear} onChange={(e) => setEYear(e.target.value)} />
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground rounded-md bg-muted/50 p-3">
+              Changes here flow to the full ledger, dashboard, day book, and collect-rent screen — they all read from the same collection record.
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button onClick={submitEditPayment} disabled={eBusy}>
+              {eBusy ? "Saving…" : "Save Changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

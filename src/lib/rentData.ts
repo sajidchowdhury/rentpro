@@ -1203,6 +1203,38 @@ export function deleteCollection(id: number): { ok: boolean; error?: string } {
   return { ok: true };
 }
 
+// --- edit a collection (payment) record ---
+// Lets the manager correct a payment's rent amount, bills, rent month/year,
+// receive date, and status. This is critical for migration cleanup — fixing
+// wrong amounts or dates that came from the old software. The change flows
+// to the full ledger + dashboard + day book (they all read from collections).
+export function updateCollection(opts: {
+  id: number;
+  rent?: number;
+  gasBill?: number;
+  moylarBill?: number;
+  serviceCharge?: number;
+  otherBill?: number;
+  rentMonth?: string;
+  rentYear?: string;
+  receiveDate?: string | null;
+  status?: "PENDING" | "DONE";
+}): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const c = ds.collections.find((x) => x.id === opts.id);
+  if (!c) return { ok: false, error: "Collection not found" };
+  if (opts.rent !== undefined) c.rent = Number(opts.rent) || 0;
+  if (opts.gasBill !== undefined) c.gasBill = Number(opts.gasBill) || 0;
+  if (opts.moylarBill !== undefined) c.moylarBill = Number(opts.moylarBill) || 0;
+  if (opts.serviceCharge !== undefined) c.serviceCharge = Number(opts.serviceCharge) || 0;
+  if (opts.otherBill !== undefined) c.otherBill = Number(opts.otherBill) || 0;
+  if (opts.rentMonth !== undefined) c.rentMonth = String(opts.rentMonth);
+  if (opts.rentYear !== undefined) c.rentYear = String(opts.rentYear);
+  if (opts.receiveDate !== undefined) c.receiveDate = opts.receiveDate ? new Date(opts.receiveDate) : null;
+  if (opts.status !== undefined) c.status = opts.status;
+  return { ok: true };
+}
+
 // --- lease rent change history ---------------------------------------------
 // Tracks rent/bills changes per lease with an effective date + reason.
 // The ledger/dues use the rent that was in effect for each month.
