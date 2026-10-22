@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Building2, Plus, Pencil, Home, Trash2, Layers, ArrowRight,
+  Building2, Plus, Pencil, Home, Trash2, Layers, ArrowRight, Scissors,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -86,6 +86,17 @@ export function PropertiesView() {
   const [uNotes, setUNotes] = useState("");
   const [uInactive, setUInactive] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // split-unit dialog
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [splitU, setSplitU] = useState<UnitDetail | null>(null);
+  const [sNewName, setSNewName] = useState("");
+  const [sNewRent, setSNewRent] = useState(0);
+  const [sOrigName, setSOrigName] = useState("");
+  const [sOrigRent, setSOrigRent] = useState(0);
+  const [sDate, setSDate] = useState("");
+  const [sReason, setSReason] = useState("");
+  const [sBusy, setSBusy] = useState(false);
 
   const refreshList = useCallback(async () => {
     setLoadingList(true);
@@ -224,6 +235,42 @@ export function PropertiesView() {
     setEditU(u); setUName(u.name); setUType(u.type); setURent(u.defaultRent);
     setUNotes(u.notes ?? ""); setUInactive(u.status === "INACTIVE"); setEditUnitOpen(true);
   }
+  function openSplit(u: UnitDetail) {
+    setSplitU(u);
+    setSNewName(`${u.name} (new part)`);
+    setSNewRent(Math.round(u.defaultRent / 2));
+    setSOrigName(`${u.name} (smaller)`);
+    setSOrigRent(u.defaultRent - Math.round(u.defaultRent / 2));
+    setSDate(new Date().toISOString().slice(0, 10));
+    setSReason("");
+    setSplitOpen(true);
+  }
+  async function submitSplit() {
+    if (!splitU) return;
+    if (!sNewName.trim()) { toast.error("New unit name is required"); return; }
+    setSBusy(true);
+    try {
+      const r = await fetch("/api/unit/split", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          unitId: splitU.id,
+          originalNewName: sOrigName,
+          originalNewRent: sOrigRent,
+          newUnitName: sNewName,
+          newUnitDefaultRent: sNewRent,
+          effectiveDate: sDate,
+          reason: sReason,
+        }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        toast.success(`Split: created "${sNewName}" + rent change recorded`);
+        setSplitOpen(false);
+        refreshList(); refreshDetail();
+      } else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to split unit"); }
+    finally { setSBusy(false); }
+  }
 
   return (
     <div className="space-y-6">
@@ -352,6 +399,7 @@ export function PropertiesView() {
                             <TableCell className="text-center"><StatusBadge status={u.status} /></TableCell>
                             <TableCell className="text-right">
                               <Button size="icon" variant="ghost" className="size-8" onClick={() => openEditUnit(u)} title="Edit"><Pencil className="size-3.5" /></Button>
+                              <Button size="icon" variant="ghost" className="size-8" onClick={() => openSplit(u)} title="Split unit (make smaller + create new room)"><Scissors className="size-3.5 text-amber-500" /></Button>
                               <Button size="icon" variant="ghost" className="size-8" onClick={() => submitDeleteUnit(u)} title="Delete"><Trash2 className="size-3.5" /></Button>
                             </TableCell>
                           </TableRow>
@@ -443,6 +491,67 @@ export function PropertiesView() {
             <Button variant="outline" onClick={() => { setAddUnitOpen(false); setEditUnitOpen(false); }}>Cancel</Button>
             <Button onClick={addUnitOpen ? submitAddUnit : submitEditUnit} disabled={busy}>
               {busy ? "Saving…" : addUnitOpen ? "Add Unit" : "Save Changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Split Unit dialog */}
+      <Dialog open={splitOpen} onOpenChange={(o) => { if (!o) setSplitOpen(false); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Scissors className="size-4" /> Split Unit</DialogTitle>
+            <DialogDescription>
+              {splitU ? `Splitting "${splitU.name}" (${money(splitU.defaultRent)}/mo) into two units.` : ""}
+              The original unit becomes smaller (reduced rent), and a new unit is created from the split.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              {/* original unit (after split) */}
+              <div className="space-y-3 rounded-md border p-3">
+                <div className="text-xs font-semibold text-muted-foreground uppercase">Original (smaller)</div>
+                <div>
+                  <Label className="text-xs">New name</Label>
+                  <Input value={sOrigName} onChange={(e) => setSOrigName(e.target.value)} placeholder="e.g. Room 1A (smaller)" />
+                </div>
+                <div>
+                  <Label className="text-xs">New rent (৳)</Label>
+                  <Input type="number" value={sOrigRent} onChange={(e) => setSOrigRent(Number(e.target.value))} />
+                </div>
+              </div>
+              {/* new unit (from the split) */}
+              <div className="space-y-3 rounded-md border border-emerald-200 dark:border-emerald-900 p-3">
+                <div className="text-xs font-semibold text-emerald-700 dark:text-emerald-300 uppercase">New unit</div>
+                <div>
+                  <Label className="text-xs">Name</Label>
+                  <Input value={sNewName} onChange={(e) => setSNewName(e.target.value)} placeholder="e.g. Room 1B (new)" />
+                </div>
+                <div>
+                  <Label className="text-xs">Default rent (৳)</Label>
+                  <Input type="number" value={sNewRent} onChange={(e) => setSNewRent(Number(e.target.value))} />
+                </div>
+              </div>
+            </div>
+            <Separator />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Effective date</Label>
+                <Input type="date" value={sDate} onChange={(e) => setSDate(e.target.value)} />
+              </div>
+              <div>
+                <Label className="text-xs">Reason (audit trail)</Label>
+                <Input value={sReason} onChange={(e) => setSReason(e.target.value)} placeholder="e.g. Room made smaller, split into two" />
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground rounded-md bg-muted/50 p-3">
+              This will: (1) rename the original unit, (2) reduce its rent (recorded with date + reason in the lease history), (3) create a new vacant unit from the split. The total rent ({money(sOrigRent + sNewRent)}) may differ from the original ({splitU ? money(splitU.defaultRent) : "—"}) — that's expected if the total rent changed.
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSplitOpen(false)}>Cancel</Button>
+            <Button onClick={submitSplit} disabled={sBusy || !sNewName.trim() || !sDate}>
+              {sBusy ? "Splitting…" : <><Scissors className="size-3.5" /> Split Unit</>}
             </Button>
           </DialogFooter>
         </DialogContent>

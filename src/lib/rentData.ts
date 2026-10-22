@@ -2627,7 +2627,6 @@ export function deleteUnit(id: number): { ok: boolean; error?: string } {
   const ds = loadDataset();
   const u = ds.units.find((x) => x.id === id);
   if (!u) return { ok: false, error: "Unit not found" };
-  // FK integrity: never delete a unit that has any lease history.
   const hasLease = ds.leases.some((l) => l.unitId === id);
   if (hasLease) {
     return { ok: false, error: "This unit has lease history — retire (set Inactive) instead of deleting." };
@@ -2635,6 +2634,78 @@ export function deleteUnit(id: number): { ok: boolean; error?: string } {
   const idx = ds.units.findIndex((x) => x.id === id);
   ds.units.splice(idx, 1);
   return { ok: true };
+}
+
+// --- unit split: create a new room from an existing one ---
+// Scenario: a room is made smaller and the extra space becomes a new rentable
+// room. The original unit's rent is reduced (via a rent-change on its lease),
+// and a new unit is created for the split-off space.
+export function splitUnit(opts: {
+  unitId: number;
+  // rename the original unit (e.g. "Room 1" -> "Room 1A (smaller)")
+  originalNewName?: string;
+  // new rent for the original unit after the split
+  originalNewRent?: number;
+  originalNewGasBill?: number;
+  originalNewServiceCharge?: number;
+  originalNewOtherBill?: number;
+  // the new unit created from the split
+  newUnitName: string;
+  newUnitType?: string;
+  newUnitDefaultRent: number;
+  // when the split takes effect (for the rent-change history)
+  effectiveDate: string;
+  reason: string;
+}): { ok: boolean; error?: string; newUnitId?: number } {
+  const ds = loadDataset();
+  const u = ds.units.find((x) => x.id === opts.unitId);
+  if (!u) return { ok: false, error: "Unit not found" };
+  if (!opts.newUnitName.trim()) return { ok: false, error: "New unit name is required" };
+
+  // 1. rename the original unit (if requested)
+  if (opts.originalNewName?.trim()) {
+    u.name = opts.originalNewName.trim();
+  }
+  // update the original unit's defaultRent
+  if (opts.originalNewRent !== undefined) {
+    u.defaultRent = opts.originalNewRent;
+  }
+
+  // 2. create the new unit from the split
+  const newUnitId = S.nextUnitId++;
+  ds.units.push({
+    id: newUnitId,
+    propertyId: u.propertyId,
+    name: opts.newUnitName.trim(),
+    type: opts.newUnitType || u.type,
+    defaultRent: Number(opts.newUnitDefaultRent) || 0,
+    notes: `Split from "${u.name}" on ${opts.effectiveDate}: ${opts.reason}`,
+    status: "VACANT",
+  } as Unit);
+  // bump the property's unitCount
+  const prop = ds.properties.find((p) => p.id === u.propertyId);
+  if (prop) prop.unitCount = ds.units.filter((x) => x.propertyId === u.propertyId).length;
+
+  // 3. record the rent change on the original unit's active lease
+  if (opts.originalNewRent !== undefined) {
+    const activeLease = ds.leases.find(
+      (l) => l.unitId === opts.unitId && l.status === "ACTIVE"
+    );
+    if (activeLease) {
+      addRentChange(
+        activeLease.id,
+        opts.effectiveDate,
+        opts.originalNewRent,
+        opts.originalNewGasBill ?? activeLease.gasBill,
+        0, // moylarBill — keep existing
+        opts.originalNewServiceCharge ?? activeLease.serviceCharge,
+        opts.originalNewOtherBill ?? activeLease.otherBill,
+        opts.reason
+      );
+    }
+  }
+
+  return { ok: true, newUnitId };
 }
 
 // ============================================================================
