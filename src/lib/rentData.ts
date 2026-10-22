@@ -993,6 +993,7 @@ function countMissingMonths(ds: Dataset, lease: Lease, targetKey: number): numbe
 
 export interface GeneratePreviewRow {
   leaseId: number;
+  tenantId: number;
   tenantName: string;
   unitName: string;
   propertyName: string;
@@ -1002,7 +1003,9 @@ export interface GeneratePreviewRow {
   serviceCharge: number;
   otherBill: number;
   total: number;
-  status: "PAID" | "DUE" | "PARTIAL";
+  // PAID = collected enough; INVOICED = PENDING collection exists (invoice
+  // created, not paid yet); DUE = no collection exists; PARTIAL = some paid
+  status: "PAID" | "DUE" | "PARTIAL" | "INVOICED";
 }
 export interface GeneratePreview {
   month: string;
@@ -1017,14 +1020,15 @@ export interface GeneratePreview {
 
 export function getGeneratePreview(
   month: string,
-  year: string
+  year: string,
+  tenantId?: number
 ): GeneratePreview {
   const ds = loadDataset();
   const targetKey = keyFromYM(year, month);
   const generated = S.generatedMonths.has(`${year}|${month}`);
 
-  const leasesForMonth = ds.leases.filter((l) =>
-    leaseCoversMonth(l, targetKey)
+  const leasesForMonth = ds.leases.filter(
+    (l) => leaseCoversMonth(l, targetKey) && (tenantId === undefined || l.tenantId === tenantId)
   );
   const colsForMonth = ds.collections.filter(
     (c) => c.rentMonth === month && c.rentYear === year
@@ -1034,12 +1038,15 @@ export function getGeneratePreview(
     .map((l) => {
       const leaseCols = colsForMonth.filter((c) => c.leaseId === l.id);
       const paidCols = leaseCols.filter((c) => c.status === "DONE");
+      const pendingCols = leaseCols.filter((c) => c.status === "PENDING");
       const collectedSum = paidCols.reduce((s, c) => s + c.rent, 0);
-      let status: "PAID" | "DUE" | "PARTIAL" = "DUE";
+      let status: GeneratePreviewRow["status"] = "DUE";
       if (paidCols.length > 0 && collectedSum >= l.rent) status = "PAID";
       else if (paidCols.length > 0) status = "PARTIAL";
+      else if (pendingCols.length > 0) status = "INVOICED";
       return {
         leaseId: l.id,
+        tenantId: l.tenantId,
         tenantName: l.tenantName,
         unitName: l.unitName,
         propertyName: l.propertyName,
@@ -1053,11 +1060,11 @@ export function getGeneratePreview(
       } as GeneratePreviewRow;
     })
     .sort((a, b) => {
-      const order = { DUE: 0, PARTIAL: 1, PAID: 2 } as const;
+      const order = { DUE: 0, PARTIAL: 1, INVOICED: 2, PAID: 3 } as const;
       return order[a.status] - order[b.status] || b.rent - a.rent;
     });
 
-  const toGenerate = rows.filter((r) => r.status !== "PAID");
+  const toGenerate = rows.filter((r) => r.status === "DUE");
   const already = rows.filter((r) => r.status === "PAID");
 
   return {
@@ -1070,6 +1077,82 @@ export function getGeneratePreview(
     totalToCollect: rows.reduce((s, r) => s + r.total, 0),
     alreadyCollectedAmount: already.reduce((s, r) => s + r.rent, 0),
   };
+}
+
+// --- idempotent rent generation: create PENDING collections (invoices) ---
+// Checks if a collection already exists for each lease+month before creating.
+// Returns {created, skipped} so the UI can report "N invoices created, M
+// already existed".
+
+export function generateRentForLease(
+  leaseId: number,
+  month: string,
+  year: string
+): { created: boolean; alreadyExists: boolean } {
+  const ds = loadDataset();
+  const lease = ds.leases.find((l) => l.id === leaseId);
+  if (!lease) return { created: false, alreadyExists: false };
+  // idempotency: skip if ANY collection (DONE or PENDING) exists for this
+  // lease+month — the invoice was already created (or the rent was collected).
+  const exists = ds.collections.some(
+    (c) => c.leaseId === leaseId && c.rentMonth === month && c.rentYear === year
+  );
+  if (exists) return { created: false, alreadyExists: true };
+  // create a PENDING collection (the invoice) with the lease's rent + bills
+  ds.collections.push({
+    id: S.nextCollectionId++,
+    leaseId,
+    tenantId: lease.tenantId,
+    rent: lease.rent,
+    gasBill: lease.gasBill,
+    moylarBill: lease.moylarBill,
+    serviceCharge: lease.serviceCharge,
+    otherBill: lease.otherBill,
+    rentMonth: month,
+    rentYear: year,
+    receiveDate: null,
+    status: "PENDING",
+  });
+  return { created: true, alreadyExists: false };
+}
+
+export function generateRentForTenant(
+  tenantId: number,
+  month: string,
+  year: string
+): { created: number; skipped: number } {
+  const ds = loadDataset();
+  const targetKey = keyFromYM(year, month);
+  const leases = ds.leases.filter(
+    (l) => l.tenantId === tenantId && l.status === "ACTIVE" && leaseCoversMonth(l, targetKey)
+  );
+  let created = 0, skipped = 0;
+  for (const l of leases) {
+    const r = generateRentForLease(l.id, month, year);
+    if (r.created) created++;
+    else skipped++;
+  }
+  return { created, skipped };
+}
+
+export function generateRentForAll(
+  month: string,
+  year: string
+): { created: number; skipped: number; tenantCount: number } {
+  const ds = loadDataset();
+  const targetKey = keyFromYM(year, month);
+  const tenantIds = new Set(
+    ds.leases
+      .filter((l) => l.status === "ACTIVE" && leaseCoversMonth(l, targetKey))
+      .map((l) => l.tenantId)
+  );
+  let created = 0, skipped = 0;
+  for (const tid of tenantIds) {
+    const r = generateRentForTenant(tid, month, year);
+    created += r.created;
+    skipped += r.skipped;
+  }
+  return { created, skipped, tenantCount: tenantIds.size };
 }
 
 /** Prototype "generate" — marks the month as generated in memory. */

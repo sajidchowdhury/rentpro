@@ -416,8 +416,8 @@ export default function RentProPage() {
               </div>
             ) : view === "dashboard" && dash ? (
               <DashboardView data={dash} onGoToExpenses={() => setView("expenses")} />
-            ) : view === "generate" && gen ? (
-              <GenerateRentView data={gen} onGenerate={onGenerate} generating={generating} />
+            ) : view === "generate" ? (
+              <GenerateRentView month={month} year={year} />
             ) : view === "collect" ? (
               <CollectRentView month={month} year={year} initialTenantId={collectTenantId} />
             ) : view === "expenses" ? (
