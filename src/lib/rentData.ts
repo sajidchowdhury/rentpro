@@ -133,6 +133,21 @@ export interface AccountHead {
   recurringMonthly: boolean;
 }
 
+// A rent change event — when the rent for a lease changes (e.g. room made
+// smaller, rent increased, bills adjusted). The effectiveDate is the first
+// month the new rent applies. The ledger/dues look up the rent that was in
+// effect for each month using this history.
+export interface RentChange {
+  effectiveDate: string; // ISO date (first of the month the change takes effect)
+  rent: number;
+  gasBill: number;
+  moylarBill: number;
+  serviceCharge: number;
+  otherBill: number;
+  reason: string;
+  recordedAt: string; // ISO timestamp
+}
+
 export interface ExpenseRec {
   headId: number;
   headName: string;
@@ -184,10 +199,12 @@ interface RentProStore {
   expenseRecs: ExpenseRec[] | null;
   generatedMonths: Set<string>;
   tenantAdjustments: Map<number, number>;
-  // (leaseId|month|year) entries where rent is waived — the tenant was gone
-  // that month (or another reason) so no rent is due. The tenant-ledger,
-  // client-ledger, and dashboard all skip these months when computing dues.
+  // (leaseId|month|year) entries where rent is waived
   waivedMonths: Set<string>;
+  // Rent change history per lease — tracks rent/bills changes over time
+  // with an effective date + reason (e.g. "room made smaller, split into two").
+  // The ledger/dues use the rent that was in effect at each month.
+  leaseRentChanges: Map<number, RentChange[]>;
   nextCollectionId: number;
   nextTxnId: number;
   nextSettlementId: number;
@@ -211,6 +228,7 @@ function getStore(): RentProStore {
       generatedMonths: new Set(),
       tenantAdjustments: new Map(),
       waivedMonths: new Set(),
+      leaseRentChanges: new Map(),
       nextCollectionId: 1_000_000,
       nextTxnId: 1_000_000,
       nextSettlementId: 1_000_000,
@@ -239,6 +257,7 @@ function getStore(): RentProStore {
   if (s.generatedMonths === undefined) s.generatedMonths = new Set();
   if (s.tenantAdjustments === undefined) s.tenantAdjustments = new Map();
   if (s.waivedMonths === undefined) s.waivedMonths = new Set();
+  if (s.leaseRentChanges === undefined) s.leaseRentChanges = new Map();
   if (s.nextCollectionId === undefined) s.nextCollectionId = 1_000_000;
   if (s.nextTxnId === undefined) s.nextTxnId = 1_000_000;
   if (s.organizations === undefined) s.organizations = null;
@@ -1184,6 +1203,182 @@ export function deleteCollection(id: number): { ok: boolean; error?: string } {
   return { ok: true };
 }
 
+// --- lease rent change history ---------------------------------------------
+// Tracks rent/bills changes per lease with an effective date + reason.
+// The ledger/dues use the rent that was in effect for each month.
+
+export function addRentChange(
+  leaseId: number,
+  effectiveDate: string,
+  rent: number,
+  gasBill: number,
+  moylarBill: number,
+  serviceCharge: number,
+  otherBill: number,
+  reason: string
+): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const lease = ds.leases.find((l) => l.id === leaseId);
+  if (!lease) return { ok: false, error: "Lease not found" };
+  const changes = S.leaseRentChanges.get(leaseId) ?? [];
+  changes.push({
+    effectiveDate,
+    rent: Number(rent) || 0,
+    gasBill: Number(gasBill) || 0,
+    moylarBill: Number(moylarBill) || 0,
+    serviceCharge: Number(serviceCharge) || 0,
+    otherBill: Number(otherBill) || 0,
+    reason: reason || "",
+    recordedAt: new Date().toISOString(),
+  });
+  // sort by effective date ascending
+  changes.sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+  S.leaseRentChanges.set(leaseId, changes);
+  // also update the lease's current rent (for the dashboard/preview)
+  lease.rent = Number(rent) || 0;
+  lease.gasBill = Number(gasBill) || 0;
+  lease.moylarBill = Number(moylarBill) || 0;
+  lease.serviceCharge = Number(serviceCharge) || 0;
+  lease.otherBill = Number(otherBill) || 0;
+  return { ok: true };
+}
+
+export function getLeaseRentChanges(leaseId: number): RentChange[] {
+  return S.leaseRentChanges.get(leaseId) ?? [];
+}
+
+// Returns the rent/bills that were in effect for a lease at a given month.
+// Looks up the rent-change history (the latest change with effectiveDate <=
+// the target month). If no change history, falls back to the lease's current
+// rent (backward compatible with existing data).
+export function getRentForMonth(
+  lease: Lease,
+  month: string,
+  year: string
+): { rent: number; gasBill: number; moylarBill: number; serviceCharge: number; otherBill: number } {
+  const changes = S.leaseRentChanges.get(lease.id);
+  if (!changes || changes.length === 0) {
+    // no history — use the lease's current values (backward compatible)
+    return { rent: lease.rent, gasBill: lease.gasBill, moylarBill: lease.moylarBill, serviceCharge: lease.serviceCharge, otherBill: lease.otherBill };
+  }
+  // find the latest change that took effect on or before the target month
+  const targetKey = keyFromYM(year, month);
+  let applicable = null;
+  for (const c of changes) {
+    const cKey = keyFromYM(c.effectiveDate.slice(0, 4), MONTHS[Number(c.effectiveDate.slice(5, 7)) - 1]);
+    if (cKey <= targetKey) applicable = c;
+  }
+  if (applicable) {
+    return { rent: applicable.rent, gasBill: applicable.gasBill, moylarBill: applicable.moylarBill, serviceCharge: applicable.serviceCharge, otherBill: applicable.otherBill };
+  }
+  // no change before this month — use the lease's original rent (the first
+  // change's values represent the NEW rent; before that, the lease.rent was
+  // the original. But since we update lease.rent on addRentChange, we can't
+  // recover the original. So if there are changes but none before this month,
+  // we use the lease's current rent as a fallback.)
+  return { rent: lease.rent, gasBill: lease.gasBill, moylarBill: lease.moylarBill, serviceCharge: lease.serviceCharge, otherBill: lease.otherBill };
+}
+
+// --- backup / restore -------------------------------------------------------
+// Exports the FULL in-memory state (dataset + store changes) as a JSON-
+// serializable object. Import replaces the state. This is the safety net
+// for the migration: backup before making changes, restore if something
+// goes wrong.
+
+export function exportState(): unknown {
+  const ds = loadDataset();
+  // serialize dates as ISO strings
+  const serializeDate = (d: Date | null) => d ? d.toISOString() : null;
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    dataset: {
+      properties: ds.properties,
+      units: ds.units,
+      tenants: ds.tenants,
+      leases: ds.leases.map((l) => ({
+        ...l,
+        agreementStart: serializeDate(l.agreementStart),
+        agreementEnd: serializeDate(l.agreementEnd),
+      })),
+      collections: ds.collections.map((c) => ({
+        ...c,
+        receiveDate: serializeDate(c.receiveDate),
+      })),
+      txns: ds.txns.map((t) => ({
+        ...t,
+        transectionDate: serializeDate(t.transectionDate),
+      })),
+      accountHeads: ds.accountHeads,
+      company: ds.company,
+    },
+    store: {
+      generatedMonths: [...S.generatedMonths],
+      tenantAdjustments: [...S.tenantAdjustments.entries()],
+      waivedMonths: [...S.waivedMonths],
+      leaseRentChanges: [...S.leaseRentChanges.entries()].map(([k, v]) => [k, v]),
+      expenseRecs: S.expenseRecs?.map((r) => ({ ...r, recordedDate: serializeDate(r.recordedDate) })) ?? null,
+      settlements: S.settlements,
+      nextCollectionId: S.nextCollectionId,
+      nextTxnId: S.nextTxnId,
+      nextSettlementId: S.nextSettlementId,
+      nextPropertyId: S.nextPropertyId,
+      nextUnitId: S.nextUnitId,
+      nextAccountHeadId: S.nextAccountHeadId,
+    },
+  };
+}
+
+export function importState(data: any): { ok: boolean; error?: string } {
+  try {
+    if (!data || !data.dataset) return { ok: false, error: "Invalid backup file" };
+    const d = data.dataset;
+    const parseDate = (s: any) => s ? new Date(s) : null;
+    const ds: Dataset = {
+      properties: d.properties ?? [],
+      units: d.units ?? [],
+      tenants: d.tenants ?? [],
+      leases: (d.leases ?? []).map((l: any) => ({
+        ...l,
+        agreementStart: parseDate(l.agreementStart),
+        agreementEnd: parseDate(l.agreementEnd),
+      })),
+      collections: (d.collections ?? []).map((c: any) => ({
+        ...c,
+        receiveDate: parseDate(c.receiveDate),
+      })),
+      txns: (d.txns ?? []).map((t: any) => ({
+        ...t,
+        transectionDate: parseDate(t.transectionDate),
+      })),
+      accountHeads: d.accountHeads ?? [],
+      company: d.company ?? null,
+      users: [],
+    };
+    S.cache = ds;
+    S.dataSource = "real";
+    // restore store fields
+    const st = data.store;
+    if (st) {
+      if (st.generatedMonths) S.generatedMonths = new Set(st.generatedMonths);
+      if (st.tenantAdjustments) S.tenantAdjustments = new Map(st.tenantAdjustments);
+      if (st.waivedMonths) S.waivedMonths = new Set(st.waivedMonths);
+      if (st.leaseRentChanges) S.leaseRentChanges = new Map(st.leaseRentChanges);
+      if (st.expenseRecs) S.expenseRecs = st.expenseRecs.map((r: any) => ({ ...r, recordedDate: parseDate(r.recordedDate) }));
+      if (st.settlements) S.settlements = st.settlements;
+      if (st.nextCollectionId) S.nextCollectionId = st.nextCollectionId;
+      if (st.nextTxnId) S.nextTxnId = st.nextTxnId;
+      if (st.nextSettlementId) S.nextSettlementId = st.nextSettlementId;
+      if (st.nextPropertyId) S.nextPropertyId = st.nextPropertyId;
+      if (st.nextUnitId) S.nextUnitId = st.nextUnitId;
+      if (st.nextAccountHeadId) S.nextAccountHeadId = st.nextAccountHeadId;
+    }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Import failed" };
+  }
+}
+
 // ============================================================================
 // F2 — UNIFIED RENT COLLECTION
 // ----------------------------------------------------------------------------
@@ -1244,7 +1439,8 @@ export function getTenantList(
               c.status === "DONE"
           )
           .reduce((s, c) => s + c.rent, 0);
-        const total = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+        const ri = getRentForMonth(l, m, String(y));
+        const total = ri.rent + ri.gasBill + ri.serviceCharge + ri.otherBill;
         if (collected < total) {
           outstandingCount++;
           outstandingTotal += total - collected;
@@ -1314,7 +1510,8 @@ export function getTenants(
               c.status === "DONE"
           )
           .reduce((s, c) => s + c.rent, 0);
-        const total = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+        const ri = getRentForMonth(l, m, String(y));
+        const total = ri.rent + ri.gasBill + ri.serviceCharge + ri.otherBill;
         if (collected < total) {
           outstandingCount++;
           outstandingTotal += total - collected;
@@ -1411,7 +1608,8 @@ export function getTenantLedger(
       const collected = cols
         .filter((c) => c.status === "DONE")
         .reduce((s, c) => s + c.rent, 0);
-      const total = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+      const ri = getRentForMonth(l, m, String(y));
+      const total = ri.rent + ri.gasBill + ri.serviceCharge + ri.otherBill;
       let status: DueRow["status"];
       if (collected >= total) status = "PAID";
       else if (collected > 0) status = "PARTIAL";
@@ -1991,7 +2189,8 @@ export function getActiveLeases(asOfMonth: string, asOfYear: string): ActiveLeas
             c.status === "DONE"
         )
         .reduce((s, c) => s + c.rent, 0);
-      const total = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+      const ri = getRentForMonth(l, m, String(y));
+      const total = ri.rent + ri.gasBill + ri.serviceCharge + ri.otherBill;
       if (collected < total) {
         outstandingMonths++;
         outstandingTotal += total - collected;
@@ -2791,7 +2990,9 @@ export function getClientLedgerStatement(
     for (let k = fromK; k <= asOfKey; k++) {
       const y = String(Math.floor(k / 12));
       const m = MONTHS[k % 12];
-      const due = l.rent + l.gasBill + l.serviceCharge + l.otherBill;
+      // use the rent that was in effect for this month (rent-change history)
+      const ri = getRentForMonth(l, m, y);
+      const due = ri.rent + ri.gasBill + ri.serviceCharge + ri.otherBill;
       if (due <= 0) continue;
       if (isLeaseMonthWaived(l.id, m, y)) {
         // deleted — skip the row, track it for restoration

@@ -2,15 +2,19 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Users, Search, Phone, Wallet, ArrowRight, CheckCircle2, Receipt, Building2,
+  Users, Search, Phone, Wallet, ArrowRight, CheckCircle2, Receipt, Building2, TrendingDown,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { money, shortDate } from "@/lib/format";
 import { usePagination } from "@/lib/use-pagination";
 import { Pager } from "@/components/rentpro/pager";
@@ -44,6 +48,47 @@ export function TenantsView({
   const [ledger, setLedger] = useState<Ledger | null>(null);
   const [loadingList, setLoadingList] = useState(true);
   const [loadingLedger, setLoadingLedger] = useState(false);
+
+  // rent-change dialog
+  const [rcOpen, setRcOpen] = useState(false);
+  const [rcLeaseId, setRcLeaseId] = useState<number | null>(null);
+  const [rcDate, setRcDate] = useState("");
+  const [rcRent, setRcRent] = useState(0);
+  const [rcGas, setRcGas] = useState(0);
+  const [rcService, setRcService] = useState(0);
+  const [rcOther, setRcOther] = useState(0);
+  const [rcReason, setRcReason] = useState("");
+  const [rcBusy, setRcBusy] = useState(false);
+
+  function openRentChange(l: { id: number; rent: number }) {
+    setRcLeaseId(l.id);
+    setRcDate(new Date().toISOString().slice(0, 10));
+    setRcRent(l.rent);
+    setRcGas(0); setRcService(0); setRcOther(0);
+    setRcReason("");
+    setRcOpen(true);
+  }
+  async function submitRentChange() {
+    if (!rcLeaseId || !rcDate) { toast.error("Date is required"); return; }
+    setRcBusy(true);
+    try {
+      const r = await fetch("/api/lease/rent-change", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          leaseId: rcLeaseId, effectiveDate: rcDate,
+          rent: rcRent, gasBill: rcGas, serviceCharge: rcService, otherBill: rcOther,
+          reason: rcReason,
+        }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        toast.success("Rent change recorded");
+        setRcOpen(false);
+        refreshLedger();
+      } else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to save"); }
+    finally { setRcBusy(false); }
+  }
 
   const refreshList = useCallback(async () => {
     setLoadingList(true);
@@ -213,15 +258,20 @@ export function TenantsView({
                   <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Leases</div>
                   <div className="space-y-2">
                     {ledger.leases.map((l) => (
-                      <div key={l.id} className="flex items-center gap-3 text-sm">
+                      <div key={l.id} className="flex items-center gap-3 text-sm rounded-md border p-2.5">
                         <Building2 className="size-4 text-muted-foreground shrink-0" />
                         <div className="flex-1 min-w-0">
                           <div className="truncate">{l.propertyName} · {l.unitName}</div>
+                          <div className="text-[11px] text-muted-foreground">{money(l.rent)}/mo</div>
                         </div>
-                        <div className="text-muted-foreground">{money(l.rent)}/mo</div>
                         {l.status === "ACTIVE"
                           ? <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100 text-[10px]">Active</Badge>
                           : <Badge variant="secondary" className="text-[10px]">Closed</Badge>}
+                        {l.status === "ACTIVE" && (
+                          <Button size="icon" variant="ghost" className="size-7" onClick={() => openRentChange(l)} title="Record a rent change (with reason + effective date)">
+                            <TrendingDown className="size-3.5 text-amber-500" />
+                          </Button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -271,6 +321,50 @@ export function TenantsView({
           </CardContent>
         </Card>
       </div>
+
+      {/* Rent Change dialog */}
+      <Dialog open={rcOpen} onOpenChange={(o) => { if (!o) setRcOpen(false); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><TrendingDown className="size-4" /> Record Rent Change</DialogTitle>
+            <DialogDescription>Track when the rent changed and why (e.g. room made smaller, rent increased). The ledger will show the correct rent for each period.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs">Effective date (first month the new rent applies)</Label>
+              <Input type="date" value={rcDate} onChange={(e) => setRcDate(e.target.value)} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">New rent (৳)</Label>
+                <Input type="number" value={rcRent} onChange={(e) => setRcRent(Number(e.target.value))} />
+              </div>
+              <div>
+                <Label className="text-xs">Gas bill (৳)</Label>
+                <Input type="number" value={rcGas} onChange={(e) => setRcGas(Number(e.target.value))} />
+              </div>
+              <div>
+                <Label className="text-xs">Service charge (৳)</Label>
+                <Input type="number" value={rcService} onChange={(e) => setRcService(Number(e.target.value))} />
+              </div>
+              <div>
+                <Label className="text-xs">Other bill (৳)</Label>
+                <Input type="number" value={rcOther} onChange={(e) => setRcOther(Number(e.target.value))} />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Reason (shown in the ledger)</Label>
+              <Input value={rcReason} onChange={(e) => setRcReason(e.target.value)} placeholder="e.g. Room made smaller, split into two. Rent reduced from 5000 to 2000." />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRcOpen(false)}>Cancel</Button>
+            <Button onClick={submitRentChange} disabled={rcBusy || !rcDate}>
+              {rcBusy ? "Saving…" : "Record Change"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

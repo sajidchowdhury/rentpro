@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Globe, Plus, Pencil, ShieldCheck, Building2, Users, Clock, CheckCircle2,
+  Globe, Plus, Pencil, ShieldCheck, Building2, Users, Clock, CheckCircle2, Download, Upload, DatabaseBackup,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -155,6 +155,60 @@ export function PlatformView({
         <Stat icon={Clock} label="On Trial" value={String(stats.trial)} accent="bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-300" />
         <Stat icon={Users} label="Owner org users" value="2" accent="bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-300" />
       </div>
+
+      {/* Backup & Restore */}
+      <Card className="border-amber-200 dark:border-amber-900">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2"><DatabaseBackup className="size-4 text-amber-600" /> Backup &amp; Restore</CardTitle>
+          <CardDescription>Download a full backup of all data (tenants, leases, collections, transactions, waivers, rent changes). Restore from a backup file if something goes wrong during migration.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap gap-3">
+            <Button variant="outline" onClick={async () => {
+              try {
+                const r = await fetch("/api/backup");
+                const blob = await r.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `rentpro-backup-${new Date().toISOString().slice(0, 10)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                toast.success("Backup downloaded");
+              } catch { toast.error("Backup failed"); }
+            }}>
+              <Download className="size-4" /> Download Backup
+            </Button>
+            <label>
+              <input type="file" accept=".json" className="hidden" onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                if (!confirm("Restore from this file? This will REPLACE all current data with the backup contents. Make sure you have a current backup first.")) return;
+                try {
+                  const text = await file.text();
+                  const data = JSON.parse(text);
+                  const r = await fetch("/api/restore", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(data),
+                  });
+                  const d = await r.json();
+                  if (d.ok) {
+                    toast.success("Restored successfully — reloading...");
+                    setTimeout(() => window.location.reload(), 1500);
+                  } else toast.error(d.error ?? "Restore failed");
+                } catch { toast.error("Invalid backup file"); }
+                e.target.value = "";
+              }} />
+              <Button variant="outline" className="cursor-pointer" asChild>
+                <span><Upload className="size-4" /> Restore from File</span>
+              </Button>
+            </label>
+          </div>
+          <div className="text-xs text-muted-foreground mt-3">
+            ⚠️ Always download a backup before making bulk changes (deleting invoices, changing rent, splitting units). The backup captures the full in-memory state — all tenants, leases, collections, transactions, waivers, and rent-change history.
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Organizations table */}
       <Card>
