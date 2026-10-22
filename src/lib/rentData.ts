@@ -2809,7 +2809,17 @@ export function getClientLedgerStatement(
     evs.push({ date: d, particulars: `Payment — ${c.rentMonth} ${c.rentYear} — ৳${c.rent}`, debit: 0, credit: c.rent, collectionId: c.id, leaseId: c.leaseId, rentMonth: c.rentMonth, rentYear: c.rentYear });
   }
 
-  evs.sort((a, b) => a.date.localeCompare(b.date));
+  // Sort ASCENDING by rent month (so all January entries come before
+  // February, etc.), then by date within the same rent month. This groups
+  // each month's rent-due + payment together chronologically, so the manager
+  // can see "jan, feb, march…" with both payment and rent for each month.
+  evs.sort((a, b) => {
+    const aKey = a.rentYear && a.rentMonth ? keyFromYM(a.rentYear, a.rentMonth) : 0;
+    const bKey = b.rentYear && b.rentMonth ? keyFromYM(b.rentYear, b.rentMonth) : 0;
+    if (aKey !== bKey) return aKey - bKey;
+    // within the same rent month: rent-due (1st) before payment (receive date)
+    return a.date.localeCompare(b.date);
+  });
 
   let running = 0;
   const entries: LedgerEntry[] = evs.map((e) => {
