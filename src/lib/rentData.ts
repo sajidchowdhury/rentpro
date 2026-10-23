@@ -1312,17 +1312,27 @@ export function getRentForMonth(
 }
 
 // --- backup / restore -------------------------------------------------------
-// Exports the FULL in-memory state (dataset + store changes) as a JSON-
-// serializable object. Import replaces the state. This is the safety net
-// for the migration: backup before making changes, restore if something
-// goes wrong.
+// Exports the FULL in-memory state — every entity, every user change, every
+// counter — as a JSON-serializable object. This is the complete snapshot of
+// the system's data at a point in time. Import replaces the entire state.
+//
+// Captured:
+//   Dataset: properties, units, tenants, leases, collections, txns,
+//     accountHeads, company, users (auth users from the dump)
+//   Store: generatedMonths, tenantAdjustments, waivedMonths, leaseRentChanges,
+//     expenseRecs, settlements, organizations, managedUsers, activeOrgId,
+//     all ID counters (nextCollectionId, nextTxnId, ..., nextManagedUserId)
+//
+// NOT captured (ephemeral / env-specific):
+//   - The legacy SQL dump file itself (it's the source, not runtime state)
+//   - Environment variables (.env)
+//   - The Docker PostgreSQL volume (use pg_dump separately for that)
 
 export function exportState(): unknown {
   const ds = loadDataset();
-  // serialize dates as ISO strings
   const serializeDate = (d: Date | null) => d ? d.toISOString() : null;
   return {
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     dataset: {
       properties: ds.properties,
@@ -1343,6 +1353,7 @@ export function exportState(): unknown {
       })),
       accountHeads: ds.accountHeads,
       company: ds.company,
+      users: ds.users,
     },
     store: {
       generatedMonths: [...S.generatedMonths],
@@ -1351,21 +1362,29 @@ export function exportState(): unknown {
       leaseRentChanges: [...S.leaseRentChanges.entries()].map(([k, v]) => [k, v]),
       expenseRecs: S.expenseRecs?.map((r) => ({ ...r, recordedDate: serializeDate(r.recordedDate) })) ?? null,
       settlements: S.settlements,
+      organizations: S.organizations,
+      managedUsers: S.managedUsers,
+      activeOrgId: S.activeOrgId,
+      dataSource: S.dataSource,
       nextCollectionId: S.nextCollectionId,
       nextTxnId: S.nextTxnId,
       nextSettlementId: S.nextSettlementId,
       nextPropertyId: S.nextPropertyId,
       nextUnitId: S.nextUnitId,
       nextAccountHeadId: S.nextAccountHeadId,
+      nextOrgId: S.nextOrgId,
+      nextManagedUserId: S.nextManagedUserId,
     },
   };
 }
 
 export function importState(data: any): { ok: boolean; error?: string } {
   try {
-    if (!data || !data.dataset) return { ok: false, error: "Invalid backup file" };
+    if (!data || !data.dataset) return { ok: false, error: "Invalid backup file — missing dataset" };
     const d = data.dataset;
     const parseDate = (s: any) => s ? new Date(s) : null;
+
+    // --- rebuild the full dataset ---
     const ds: Dataset = {
       properties: d.properties ?? [],
       units: d.units ?? [],
@@ -1385,27 +1404,48 @@ export function importState(data: any): { ok: boolean; error?: string } {
       })),
       accountHeads: d.accountHeads ?? [],
       company: d.company ?? null,
-      users: [],
+      users: d.users ?? [],
     };
+
+    // --- replace the dataset ---
     S.cache = ds;
-    S.dataSource = "real";
-    // restore store fields
+    S.dataSource = (data.store?.dataSource as "real" | "demo") ?? "real";
+
+    // --- restore all store fields ---
     const st = data.store;
     if (st) {
-      if (st.generatedMonths) S.generatedMonths = new Set(st.generatedMonths);
-      if (st.tenantAdjustments) S.tenantAdjustments = new Map(st.tenantAdjustments);
-      if (st.waivedMonths) S.waivedMonths = new Set(st.waivedMonths);
-      if (st.leaseRentChanges) S.leaseRentChanges = new Map(st.leaseRentChanges);
-      if (st.expenseRecs) S.expenseRecs = st.expenseRecs.map((r: any) => ({ ...r, recordedDate: parseDate(r.recordedDate) }));
-      if (st.settlements) S.settlements = st.settlements;
-      if (st.nextCollectionId) S.nextCollectionId = st.nextCollectionId;
-      if (st.nextTxnId) S.nextTxnId = st.nextTxnId;
-      if (st.nextSettlementId) S.nextSettlementId = st.nextSettlementId;
-      if (st.nextPropertyId) S.nextPropertyId = st.nextPropertyId;
-      if (st.nextUnitId) S.nextUnitId = st.nextUnitId;
-      if (st.nextAccountHeadId) S.nextAccountHeadId = st.nextAccountHeadId;
+      S.generatedMonths = new Set(st.generatedMonths ?? []);
+      S.tenantAdjustments = new Map(st.tenantAdjustments ?? []);
+      S.waivedMonths = new Set(st.waivedMonths ?? []);
+      S.leaseRentChanges = new Map(st.leaseRentChanges ?? []);
+      S.expenseRecs = st.expenseRecs
+        ? st.expenseRecs.map((r: any) => ({ ...r, recordedDate: parseDate(r.recordedDate) }))
+        : null;
+      S.settlements = st.settlements ?? [];
+      S.organizations = st.organizations ?? null;
+      S.managedUsers = st.managedUsers ?? null;
+      S.activeOrgId = st.activeOrgId ?? null;
+      S.nextCollectionId = st.nextCollectionId ?? 1_000_000;
+      S.nextTxnId = st.nextTxnId ?? 1_000_000;
+      S.nextSettlementId = st.nextSettlementId ?? 1_000_000;
+      S.nextPropertyId = st.nextPropertyId ?? 1_000_000;
+      S.nextUnitId = st.nextUnitId ?? 1_000_000;
+      S.nextAccountHeadId = st.nextAccountHeadId ?? 1_000_000;
+      S.nextOrgId = st.nextOrgId ?? 2;
+      S.nextManagedUserId = st.nextManagedUserId ?? 2;
     }
-    return { ok: true };
+
+    // verify the restore worked — check that the dataset has data
+    const totalRecords =
+      ds.properties.length + ds.units.length + ds.tenants.length +
+      ds.leases.length + ds.collections.length + ds.txns.length;
+    if (totalRecords === 0) {
+      return { ok: false, error: "Backup file contains no data — restore aborted" };
+    }
+
+    return {
+      ok: true,
+    };
   } catch (e: any) {
     return { ok: false, error: e?.message ?? "Import failed" };
   }
