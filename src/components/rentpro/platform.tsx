@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Globe, Plus, Pencil, ShieldCheck, Building2, Users, Clock, CheckCircle2, Download, Upload, DatabaseBackup,
+  Globe, Plus, Pencil, ShieldCheck, Building2, Users, Clock, CheckCircle2, Download, Upload, DatabaseBackup, Zap,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +52,10 @@ export function PlatformView({
   const [addOpen, setAddOpen] = useState(false);
   const [editOrg, setEditOrg] = useState<Org | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // migration
+  const [migrating, setMigrating] = useState(false);
+  const [migrationSummary, setMigrationSummary] = useState<string | null>(null);
 
   // form fields
   const [fName, setFName] = useState("");
@@ -206,6 +210,46 @@ export function PlatformView({
           </div>
           <div className="text-xs text-muted-foreground mt-3">
             ⚠️ Always download a backup before making bulk changes (deleting invoices, changing rent, splitting units). The backup captures the full in-memory state — all tenants, leases, collections, transactions, waivers, and rent-change history.
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Data Migration */}
+      <Card className="border-rose-200 dark:border-rose-900">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2"><Zap className="size-4 text-rose-600" /> Data Migration</CardTitle>
+          <CardDescription>
+            Applies the migration rules: default tenants start Feb 2023 (collection Mar 2023 - Oct 2026),
+            special handling for 0036/0038/0040/0042, rent change for 0013 (5K→3K Nov 2024),
+            0016 lease end Dec 2025 + ৳120K due with Bangla note.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button variant="destructive" onClick={async () => {
+              if (!confirm("⚠️ Run the data migration?\n\nThis will:\n• Set all default tenants' lease start to Feb 2023\n• Filter collections to Mar 2023 - Oct 2026\n• Remove tenant 0040 completely\n• Set up 0036 (Gone, Aug 2023 - Nov 2024, 0 due)\n• Set up 0038 (Oct 2024 - Oct 2026, 0 due)\n• Set up 0042 (Oct 2025 - Oct 2026, 0 due)\n• 0013: rent 5K→3K effective Nov 2024, 0 due\n• 0016: lease end Dec 2025, ৳120K due + Bangla note\n\nMake sure you have a backup!")) return;
+              try {
+                setMigrating(true);
+                const r = await fetch("/api/migrate", { method: "POST" });
+                const d = await r.json();
+                if (d.ok) {
+                  setMigrationSummary(d.summary);
+                  toast.success("Migration completed — download a backup to persist!");
+                } else toast.error(d.error ?? "Migration failed");
+              } catch { toast.error("Migration failed"); }
+              finally { setMigrating(false); }
+            }} disabled={migrating}>
+              {migrating ? "Migrating…" : <><Zap className="size-4" /> Run Migration</>}
+            </Button>
+            {migrationSummary && (
+              <details className="flex-1 min-w-0">
+                <summary className="text-xs text-emerald-600 cursor-pointer hover:underline">View migration summary</summary>
+                <pre className="text-[10px] text-muted-foreground whitespace-pre-wrap mt-2 max-h-48 overflow-y-auto bg-muted/40 rounded-md p-2">{migrationSummary}</pre>
+              </details>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground mt-3">
+            ⚠️ This modifies the in-memory data. Always download a backup FIRST. After migration, download another backup to persist the changes (otherwise they're lost on server restart).
           </div>
         </CardContent>
       </Card>

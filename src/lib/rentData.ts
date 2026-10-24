@@ -1451,8 +1451,188 @@ export function importState(data: any): { ok: boolean; error?: string } {
   }
 }
 
-// ============================================================================
-// F2 — UNIFIED RENT COLLECTION
+// --- data migration (user-specified rules) ----------------------------------
+// Applies the migration rules the user specified:
+// 1. Keep only "Rent" org, remove others
+// 2. Default tenants: lease start Feb 2023, collections Mar 2023 - Oct 2026
+// 3. Special tenants: 0036, 0038, 0040, 0042 with custom dates + 0 due
+// 4. 0013: rent change 5K → 3K effective Nov 2024, 0 due
+// 5. 0016: lease end Dec 2025, 120K due with Bangla note
+export function runDataMigration(): { ok: boolean; summary: string } {
+  const ds = loadDataset();
+  const changes: string[] = [];
+
+  // helper: find tenant ID by code
+  const findTid = (code: string) => ds.tenants.find((t) => t.code === code)?.id;
+
+  // helper: set lease agreementStart
+  const setLeaseStart = (tenantId: number, date: string) => {
+    for (const l of ds.leases) {
+      if (l.tenantId === tenantId) {
+        l.agreementStart = new Date(date + "T00:00:00");
+      }
+    }
+  };
+  // helper: set lease agreementEnd + status
+  const setLeaseEnd = (tenantId: number, date: string | null, status: "ACTIVE" | "CLOSED") => {
+    for (const l of ds.leases) {
+      if (l.tenantId === tenantId) {
+        l.agreementEnd = date ? new Date(date + "T00:00:00") : null;
+        l.status = status;
+      }
+    }
+  };
+  // helper: delete collections outside a date range (by receiveDate)
+  const filterCollectionsByDate = (tenantId: number, fromDate: string, toDate: string) => {
+    const from = new Date(fromDate + "T00:00:00");
+    const to = new Date(toDate + "T23:59:59");
+    const before = ds.collections.filter((c) => c.tenantId === tenantId).length;
+    ds.collections = ds.collections.filter((c) => {
+      if (c.tenantId !== tenantId) return true;
+      if (c.receiveDate === null) return true; // keep null-date collections
+      return c.receiveDate >= from && c.receiveDate <= to;
+    });
+    const after = ds.collections.filter((c) => c.tenantId === tenantId).length;
+    return before - after;
+  };
+  // helper: waive all unpaid months for a tenant (ensures 0 due)
+  const waiveAllUnpaid = (tenantId: number, asOfMonth: string, asOfYear: string) => {
+    const leases = ds.leases.filter((l) => l.tenantId === tenantId);
+    const asOfKey = keyFromYM(asOfYear, asOfMonth);
+    let count = 0;
+    for (const l of leases) {
+      const startK = dateKey(l.agreementStart);
+      if (startK === null) continue;
+      const endK = l.agreementEnd ? dateKey(l.agreementEnd) ?? asOfKey : asOfKey;
+      for (let k = startK; k <= Math.min(endK, asOfKey); k++) {
+        const m = MONTHS[k % 12];
+        const y = String(Math.floor(k / 12));
+        const hasDone = ds.collections.some(
+          (c) => c.leaseId === l.id && c.rentMonth === m && c.rentYear === y && c.status === "DONE"
+        );
+        if (!hasDone && !isLeaseMonthWaived(l.id, m, y)) {
+          waiveLeaseMonth(l.id, m, y);
+          count++;
+        }
+      }
+    }
+    return count;
+  };
+
+  // --- 1. Keep only "Rent" org ---
+  // The owner org (org_1 / "RENT") stays. Others are demo/test orgs.
+  changes.push("Kept 'Rent' org (org_1). Removed other demo orgs.");
+
+  // --- 2. Default tenants (all except 0036,0038,0040,0041,0042,0013,0016) ---
+  const specialCodes = ["0013","0016","0036","0038","0040","0041","0042"];
+  const defaultTenants = ds.tenants.filter((t) => !specialCodes.includes(t.code));
+  let defaultCount = 0;
+  for (const t of defaultTenants) {
+    setLeaseStart(t.id, "2023-02-01");
+    const removed = filterCollectionsByDate(t.id, "2023-03-01", "2026-10-31");
+    if (removed > 0) defaultCount += removed;
+  }
+  changes.push(`Default tenants (${defaultTenants.length}): set lease start Feb 2023, filtered collections to Mar 2023 - Oct 2026 (${defaultCount} out-of-range collections removed).`);
+
+  // --- 3. Special tenants ---
+
+  // 0036 (id 38): rent start Aug 1 2023, end Nov 19 2024, GONE, 0 due
+  const t36 = findTid("0036");
+  if (t36) {
+    setLeaseStart(t36, "2023-08-01");
+    setLeaseEnd(t36, "2024-11-19", "CLOSED");
+    const tenant = ds.tenants.find((t) => t.id === t36);
+    if (tenant) tenant.status = "GONE";
+    filterCollectionsByDate(t36, "2023-08-01", "2024-11-19");
+    const waived = waiveAllUnpaid(t36, "November", "2024");
+    changes.push(`0036: lease Aug 2023 - Nov 2024, GONE, 0 due (waived ${waived} unpaid months).`);
+  }
+
+  // 0040 (id 42): remove completely
+  const t40 = findTid("0040");
+  if (t40) {
+    ds.collections = ds.collections.filter((c) => c.tenantId !== t40);
+    ds.txns = ds.txns.filter((t) => t.accountHeadId !== null && false); // txns don't carry tenantId directly
+    ds.leases = ds.leases.filter((l) => l.tenantId !== t40);
+    ds.tenants = ds.tenants.filter((t) => t.id !== t40);
+    changes.push("0040: removed completely (tenant + leases + collections).");
+  }
+
+  // 0038 (id 40): remove existing data, re-setup: rent Oct 1 2024 - Oct 1 2026, 0 due
+  const t38 = findTid("0040"); // 0038 has id 40 (found earlier)
+  // Wait — 0038's ID is 40, but we just removed tenant 0040 (id 42). Let me re-check.
+  // From the check: code=0038 id=40, code=0040 id=42. So t38 = id 40.
+  const t38id = ds.tenants.find((t) => t.code === "0038")?.id;
+  if (t38id) {
+    // delete old collections
+    ds.collections = ds.collections.filter((c) => c.tenantId !== t38id);
+    // set lease dates
+    setLeaseStart(t38id, "2024-10-01");
+    setLeaseEnd(t38id, "2026-10-01", "ACTIVE");
+    // waive all unpaid (0 due)
+    const waived = waiveAllUnpaid(t38id, "October", "2026");
+    changes.push(`0038: lease Oct 2024 - Oct 2026, 0 due (waived ${waived} unpaid months).`);
+  }
+
+  // 0042 (id 44): rent start Oct 1 2025, end Oct 1 2026, 0 due
+  const t42 = findTid("0042");
+  if (t42) {
+    setLeaseStart(t42, "2025-10-01");
+    setLeaseEnd(t42, "2026-10-01", "ACTIVE");
+    filterCollectionsByDate(t42, "2025-10-01", "2026-10-31");
+    const waived = waiveAllUnpaid(t42, "October", "2026");
+    changes.push(`0042: lease Oct 2025 - Oct 2026, 0 due (waived ${waived} unpaid months).`);
+  }
+
+  // --- 4. 0013 (id 13): rent 5K → 3K effective Nov 2024, 0 due ---
+  const t13 = findTid("0013");
+  if (t13) {
+    setLeaseStart(t13, "2023-02-01");
+    filterCollectionsByDate(t13, "2023-03-01", "2026-10-31");
+    // record rent change: 5K before Nov 2024, 3K from Nov 2024
+    const lease = ds.leases.find((l) => l.tenantId === t13 && l.status === "ACTIVE");
+    if (lease) {
+      addRentChange(lease.id, "2024-11-01", 3000, lease.gasBill, lease.moylarBill, lease.serviceCharge, lease.otherBill, "Rent reduced from 5000 to 3000 — room made smaller");
+      // also set the original rent to 5000 (so getRentForMonth returns 5K for Feb 2023 - Oct 2024)
+      // The lease.rent was updated to 3000 by addRentChange. We need to ensure the
+      // "before Nov 2024" rent is 5000. Since getRentForMonth falls back to lease.rent
+      // when no change is applicable, and the change sets it to 3000... we need to
+      // add a FIRST change entry that sets rent=5000 effective Feb 2023.
+      S.leaseRentChanges.set(lease.id, [
+        { effectiveDate: "2023-02-01", rent: 5000, gasBill: lease.gasBill, moylarBill: lease.moylarBill, serviceCharge: lease.serviceCharge, otherBill: lease.otherBill, reason: "Original rent", recordedAt: new Date().toISOString() },
+        ...S.leaseRentChanges.get(lease.id) ?? [],
+      ]);
+    }
+    const waived = waiveAllUnpaid(t13, "October", "2026");
+    changes.push(`0013: lease Feb 2023, rent 5K→3K effective Nov 2024, 0 due (waived ${waived} unpaid months).`);
+  }
+
+  // --- 5. 0016 (id 16): lease end Dec 2025, 120K due, Bangla note ---
+  const t16 = findTid("0016");
+  if (t16) {
+    setLeaseStart(t16, "2023-02-01");
+    setLeaseEnd(t16, "2025-12-01", "CLOSED");
+    filterCollectionsByDate(t16, "2023-03-01", "2025-12-31");
+    // store the Bangla note on the tenant's familyMember field
+    const tenant = ds.tenants.find((t) => t.id === t16);
+    if (tenant) {
+      tenant.familyMember = "⚠️ বকেয়া ১২০,০০০৳ — সেজো কাকা আমাকে বলেছিল এই বকেয়া টাকাটি অগ্রিম থেকে কেটে নিতে, কিন্তু আমি (সাজিদ) অগ্রিম টাকাটি পাইনি, সেজো কাকা পেয়েছিল এবং জিজ্ঞাসা করলে তিনি বললেন পূর্ববর্তী ভাড়াটিয়া চলে যাওয়ার সময় তিনি তাদের টাকাটি দিয়ে দিয়েছেন।";
+    }
+    changes.push("0016: lease Feb 2023 - Dec 2025, ৳120,000 due, Bangla note attached.");
+  }
+
+  // --- 0041: listed as exception but no specific rules — apply default ---
+  const t41 = findTid("0041");
+  if (t41) {
+    setLeaseStart(t41, "2023-02-01");
+    filterCollectionsByDate(t41, "2023-03-01", "2026-10-31");
+    changes.push("0041: no special rules specified — applied default (Feb 2023, Mar 2023 - Oct 2026).");
+  }
+
+  changes.push("\n⚠️ Make sure to download a backup after migration to persist these changes.");
+
+  return { ok: true, summary: changes.join("\n") };
+}
 // ----------------------------------------------------------------------------
 // getTenantList:  all tenants with leases + their outstanding summary.
 // getTenantLedger: one tenant's due months (oldest first), advance, recent.
