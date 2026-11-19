@@ -1449,6 +1449,30 @@ export function importState(data: any): { ok: boolean; error?: string } {
       S.nextManagedUserId = st.nextManagedUserId ?? 2;
     }
 
+    // --- Heal pre-edit/delete backups -------------------------------------
+    // Expense records gained a stable `id` (and a `transactionId` link) when
+    // edit/delete support landed. A backup downloaded from an older version
+    // has `expenseRecs` WITHOUT `id` — and they were aggregated by
+    // (head, month, year) rather than 1:1 per transaction. Restoring those
+    // as-is would leave every record with id === undefined, which breaks the
+    // Expense Ledger table (React "unique key" warning) and makes edit/delete
+    // unable to target a record.
+    //
+    // Fix: if the restored recs lack `id`, discard them and re-seed 1:1 from
+    // the restored EXPENSE transactions. This gives every expense a proper id
+    // + transactionId link, with no data loss (recs and expense txns are
+    // always in 1:1 correspondence by construction). The re-seed also repairs
+    // the old aggregated structure into per-record granularity.
+    if (S.expenseRecs && S.expenseRecs.length > 0) {
+      const needsHeal = (S.expenseRecs[0] as any).id === undefined;
+      if (needsHeal) {
+        console.log(
+          `[rentData] Restored backup has ${S.expenseRecs.length} pre-edit/delete expense records (no id) — re-seeding 1:1 from transactions.`
+        );
+        S.expenseRecs = null; // force ensureExpenseRecs() to re-seed from ds.txns
+      }
+    }
+
     // verify the restore worked — check that the dataset has data
     const totalRecords =
       ds.properties.length + ds.units.length + ds.tenants.length +

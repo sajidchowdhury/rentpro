@@ -1052,8 +1052,8 @@ function ExpenseLedgerTable({ data, heads, onChanged }: { data: ExpLedger; heads
             <TableBody>
               {paged.pageItems.length === 0 ? (
                 <TableRow><TableCell colSpan={onChanged ? 7 : 6} className="text-center text-muted-foreground py-8">No expense records match the current filters.</TableCell></TableRow>
-              ) : paged.pageItems.map((r) => (
-                <TableRow key={r.id}>
+              ) : paged.pageItems.map((r, idx) => (
+                <TableRow key={r.id ?? `exp-row-${idx}`}>
                   <TableCell className="whitespace-nowrap">{shortDate(r.date)}</TableCell>
                   <TableCell className="font-medium">{r.headName}{r.isBackfill && <span className="ml-1 text-[10px] text-amber-600 dark:text-amber-400">(back-fill)</span>}</TableCell>
                   <TableCell className="whitespace-nowrap text-muted-foreground">{r.month.slice(0, 3)} {r.year}</TableCell>
