@@ -458,10 +458,11 @@ function loadDataset(): Dataset {
       id: num(r.id),
       name: str(r.account_head) || `Head ${r.id}`,
       type: (str(r.account_type) || "EXPENSE").toUpperCase() as AccountHead["type"],
-      // Legacy dump has no recurring flag — default false. The dashboard /
-      // expenses screens detect recurring dynamically (2+ months recorded)
-      // for these, but a manager can flip this on explicitly via the edit
-      // dialog to pin a head as recurring.
+      // Legacy dump has no recurring flag — default false. A manager flips
+      // this on explicitly via the edit dialog ("Show on the dashboard's
+      // monthly checklist + rent-status tracker") to pin a head as recurring.
+      // Only explicitly-flagged heads appear in the Due & Missing checklist
+      // (auto-detection by 2+ recorded months is no longer used).
       recurringMonthly: false,
     }))
     .filter((a) => a.id);
@@ -2206,20 +2207,31 @@ export function getExpenseTracker(month: string, year: string): ExpenseTracker {
     }
   }
 
-  const headsWithRecs = new Set([...agg.values()].map((r) => r.headId));
+  // Heads to surface: every head that has at least one expense record, PLUS
+  // every head explicitly flagged `recurringMonthly` — even if it has never
+  // been recorded yet, so it still appears on the monthly checklist as "due".
+  // Auto-detected recurring (recorded in 2+ months but NOT explicitly flagged)
+  // is intentionally NOT surfaced anymore: only the manager's explicit
+  // "Show on the dashboard's monthly checklist + rent-status tracker" switch
+  // (set during expense-type setup) qualifies a head for the Due & Missing
+  // checklist. One-off expenses never appear there.
+  const allHeadIds = new Set<number>([...agg.values()].map((r) => r.headId));
+  for (const a of ds.accountHeads) {
+    if (a.recurringMonthly) allHeadIds.add(a.id);
+  }
   const types: ExpenseTypeStatus[] = [];
 
-  for (const hid of headsWithRecs) {
+  for (const hid of allHeadIds) {
     const headRecs = [...agg.values()].filter((r) => r.headId === hid);
     const sorted = headRecs.sort(
       (a, b) => keyFromYM(a.year, a.month) - keyFromYM(b.year, b.month)
     );
     const distinct = new Set(sorted.map((r) => `${r.year}|${r.month}`)).size;
-    // A head is "recurring" if the manager explicitly marked it so, OR it's
-    // been recorded in 2+ distinct months historically (auto-detection for
-    // legacy dump heads that don't carry the explicit flag).
+    // A head is "recurring" ONLY if the manager explicitly flagged it so.
+    // (Recorded-in-2+-months auto-detection is no longer used — one-off
+    // expenses must never appear in the Due & Missing checklist.)
     const head = ds.accountHeads.find((a) => a.id === hid);
-    const recurring = (head?.recurringMonthly ?? false) || distinct >= 2;
+    const recurring = head?.recurringMonthly ?? false;
     const asOfRec = sorted.find((r) => r.month === month && r.year === year);
     const last3 = sorted.slice(-3);
     const predicted = last3.length
