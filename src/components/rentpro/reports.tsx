@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw, Check, ChevronsUpDown, Search, Pencil,
+  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw, Check, ChevronsUpDown, Search, Pencil, Receipt,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -52,6 +52,9 @@ interface ClientLedger { tenant: { id: number; name: string; code: string; mobil
 interface ClientDueRow { tenantId: number; name: string; code: string; mobile: string | null; status: string; outstandingTotal: number; outstandingCount: number; advanceBalance: number; }
 interface ClientDue { month: string; year: string; rows: ClientDueRow[]; totalOutstanding: number; totalTenants: number; }
 interface TenantOpt { id: number; name: string; code: string; }
+interface AccountHeadOpt { id: number; name: string; type: string; recurring: boolean; }
+interface ExpLedgerRow { id: number; headId: number; headName: string; date: string; month: string; year: string; amount: number; note: string; method: "CASH" | "BANK" | "MOBILE_BANK"; isBackfill: boolean; }
+interface ExpLedger { rows: ExpLedgerRow[]; totalAmount: number; count: number; byHead: Array<{ headId: number; headName: string; count: number; amount: number }>; }
 
 function printHTML(title: string, bodyInner: string) {
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
@@ -111,6 +114,14 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
   const [due, setDue] = useState<ClientDue | null>(null);
   const [dueLoading, setDueLoading] = useState(false);
 
+  // expense ledger (all expense records — multi-select account heads + edit/delete)
+  const [expHeads, setExpHeads] = useState<AccountHeadOpt[]>([]);
+  const [expSelHeadIds, setExpSelHeadIds] = useState<Set<number>>(new Set());
+  const [expFrom, setExpFrom] = useState("");
+  const [expTo, setExpTo] = useState("");
+  const [expLedger, setExpLedger] = useState<ExpLedger | null>(null);
+  const [expLoading, setExpLoading] = useState(false);
+
   // defaults: this month range for day book
   useEffect(() => {
     if (month && year) {
@@ -136,6 +147,19 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
       })
       .catch(() => {});
   }, [month, year, ledgerId]);
+
+  // expense account heads list for the Expense Ledger multi-select filter
+  useEffect(() => {
+    fetch("/api/expense-heads")
+      .then((r) => r.json())
+      .then((d) => {
+        const all: AccountHeadOpt[] = (d.allHeads ?? [])
+          .map((h: any) => ({ id: h.id, name: h.name, type: h.type, recurring: h.recurringMonthly }))
+          .sort((a: AccountHeadOpt, b: AccountHeadOpt) => a.name.localeCompare(b.name, "bn"));
+        setExpHeads(all);
+      })
+      .catch(() => {});
+  }, []);
 
   const fetchDaybook = useCallback(async () => {
     if (!dbFrom || !dbTo) return;
@@ -199,12 +223,26 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
     finally { setDueLoading(false); }
   }, [month, year]);
 
+  const fetchExpLedger = useCallback(async () => {
+    setExpLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (expSelHeadIds.size > 0) params.set("headIds", [...expSelHeadIds].join(","));
+      if (expFrom) params.set("from", expFrom);
+      if (expTo) params.set("to", expTo);
+      const r = await fetch(`/api/report/expense-ledger?${params}`);
+      setExpLedger(await r.json());
+    } catch { toast.error("Failed to load expense ledger"); }
+    finally { setExpLoading(false); }
+  }, [expSelHeadIds, expFrom, expTo]);
+
   // auto-fetch when the active tab's params are ready
   useEffect(() => { if (tab === "daybook" && dbFrom && dbTo && !daybook) fetchDaybook(); }, [tab, dbFrom, dbTo, daybook, fetchDaybook]);
   useEffect(() => { if (tab === "yearly" && yrYear && !yearly) fetchYearly(); }, [tab, yrYear, yearly, fetchYearly]);
   useEffect(() => { if (tab === "account" && !acc) fetchAcc(); }, [tab, acc, fetchAcc]);
   useEffect(() => { if (tab === "ledger" && ledgerId !== null && !ledger) fetchLedger(); }, [tab, ledgerId, ledger, fetchLedger]);
   useEffect(() => { if (tab === "due" && !due) fetchDue(); }, [tab, due, fetchDue]);
+  useEffect(() => { if (tab === "expense-ledger" && !expLedger) fetchExpLedger(); }, [tab, expLedger, fetchExpLedger]);
 
   return (
     <div className="space-y-6">
@@ -213,7 +251,7 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
           <BarChart3 className="size-6 text-blue-600" />
           Reports
         </h1>
-        <p className="text-sm text-muted-foreground">Day book, client ledger, yearly, account-head-wise &amp; client-due — all printable.</p>
+        <p className="text-sm text-muted-foreground">Day book, client ledger, yearly, account-head-wise, client-due &amp; expense ledger — all printable.</p>
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
@@ -223,6 +261,7 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
           <TabsTrigger value="account" className="gap-1"><Layers className="size-3.5" /> Account-Head</TabsTrigger>
           <TabsTrigger value="ledger" className="gap-1"><User className="size-3.5" /> Client Ledger</TabsTrigger>
           <TabsTrigger value="due" className="gap-1"><Wallet className="size-3.5" /> Client Due</TabsTrigger>
+          <TabsTrigger value="expense-ledger" className="gap-1"><Receipt className="size-3.5" /> Expense Ledger</TabsTrigger>
         </TabsList>
 
         {/* DAY BOOK */}
@@ -387,6 +426,69 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
             </CardHeader>
             <CardContent>
               {dueLoading || !due ? <Skeleton className="h-80 rounded" /> : <DueTable data={due} />}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* EXPENSE LEDGER */}
+        <TabsContent value="expense-ledger">
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">Expense Ledger (খরচের খতিয়ান)</CardTitle>
+                  <CardDescription>Every expense record — filter by account head(s) + date range. Edit or delete any entry; totals stay correct everywhere.</CardDescription>
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="w-[260px]">
+                    <Label className="text-xs">Account heads</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
+                          {expSelHeadIds.size === 0 ? "All account heads" : `${expSelHeadIds.size} head${expSelHeadIds.size > 1 ? "s" : ""} selected`}
+                          <ChevronsUpDown className="size-4 opacity-50 shrink-0" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[300px] p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search account head…" />
+                          <CommandList>
+                            <CommandEmpty>No account head found.</CommandEmpty>
+                            <CommandGroup>
+                              {expHeads.map((h) => (
+                                <CommandItem
+                                  key={h.id}
+                                  value={h.name}
+                                  onSelect={() => {
+                                    setExpSelHeadIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(h.id)) next.delete(h.id); else next.add(h.id);
+                                      return next;
+                                    });
+                                    setExpLedger(null);
+                                  }}
+                                  className="flex items-center gap-2"
+                                >
+                                  <Check className={`size-4 ${expSelHeadIds.has(h.id) ? "opacity-100" : "opacity-0"}`} />
+                                  <span className="truncate">{h.name}</span>
+                                  {h.recurring && <Badge variant="secondary" className="text-[9px] ml-auto">recurring</Badge>}
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div><Label className="text-xs">From</Label><Input type="date" value={expFrom} onChange={(e) => { setExpFrom(e.target.value); setExpLedger(null); }} className="h-9 w-[150px]" /></div>
+                  <div><Label className="text-xs">To</Label><Input type="date" value={expTo} onChange={(e) => { setExpTo(e.target.value); setExpLedger(null); }} className="h-9 w-[150px]" /></div>
+                  <Button size="sm" variant="outline" onClick={fetchExpLedger}><RefreshCw className="size-3.5" /> Run</Button>
+                  <Button size="sm" onClick={() => expLedger && printHTML("Expense Ledger", expenseLedgerHTML(expLedger))} disabled={!expLedger}><Printer className="size-3.5" /> Print</Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {expLoading || !expLedger ? <Skeleton className="h-80 rounded" /> : <ExpenseLedgerTable data={expLedger} heads={expHeads} onChanged={fetchExpLedger} />}
             </CardContent>
           </Card>
         </TabsContent>
@@ -854,6 +956,214 @@ function LedgerTable({ data, onChanged }: { data: ClientLedger; onChanged?: () =
   );
 }
 
+function ExpenseLedgerTable({ data, heads, onChanged }: { data: ExpLedger; heads: AccountHeadOpt[]; onChanged?: () => void }) {
+  const paged = usePagination(data.rows, 25);
+  // edit dialog state
+  const [editOpen, setEditOpen] = useState(false);
+  const [editRow, setEditRow] = useState<ExpLedgerRow | null>(null);
+  const [eHeadId, setEHeadId] = useState<number | null>(null);
+  const [eAmount, setEAmount] = useState(0);
+  const [eDate, setEDate] = useState("");
+  const [eMonth, setEMonth] = useState("");
+  const [eYear, setEYear] = useState("");
+  const [eMethod, setEMethod] = useState<"CASH" | "BANK" | "MOBILE_BANK">("CASH");
+  const [eNote, setENote] = useState("");
+  const [eBusy, setEBusy] = useState(false);
+
+  function openEdit(r: ExpLedgerRow) {
+    setEditRow(r);
+    setEHeadId(r.headId);
+    setEAmount(r.amount);
+    setEDate(r.date);
+    setEMonth(r.month);
+    setEYear(r.year);
+    setEMethod(r.method);
+    setENote(r.note);
+    setEditOpen(true);
+  }
+  async function submitEdit() {
+    if (!editRow || eHeadId === null) { toast.error("Select an account head"); return; }
+    if (!(eAmount > 0)) { toast.error("Amount must be greater than zero"); return; }
+    setEBusy(true);
+    try {
+      const r = await fetch("/api/expense/update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editRow.id,
+          accountHeadId: eHeadId,
+          amount: eAmount,
+          date: eDate || undefined,
+          month: eMonth,
+          year: eYear,
+          note: eNote,
+          method: eMethod,
+        }),
+      });
+      const d = await r.json();
+      if (d.ok) { toast.success("Expense updated"); setEditOpen(false); onChanged?.(); }
+      else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to update"); }
+    finally { setEBusy(false); }
+  }
+  async function deleteRow(r: ExpLedgerRow) {
+    if (!confirm(`Delete this expense?\n"${r.headName}" — ${money(r.amount)} (${shortDate(r.date)})\nThis removes it from the ledger and all reports.`)) return;
+    try {
+      const res = await fetch("/api/expense/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: r.id }),
+      });
+      const d = await res.json();
+      if (d.ok) { toast.success("Expense deleted"); onChanged?.(); }
+      else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to delete"); }
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* summary + per-head breakdown */}
+      <div className="flex flex-wrap gap-4 text-sm rounded-md bg-muted/60 p-3">
+        <div><span className="text-muted-foreground">Records:</span> <span className="font-medium">{data.count}</span></div>
+        <div><span className="text-muted-foreground">Total expense:</span> <span className="font-bold text-rose-600 dark:text-rose-400">{money(data.totalAmount)}</span></div>
+        <div><span className="text-muted-foreground">Heads:</span> {data.byHead.length}</div>
+      </div>
+      {data.byHead.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {data.byHead.map((h) => (
+            <Badge key={h.headId} variant="secondary" className="text-[11px] gap-1" title={`${h.count} record(s)`}>
+              {h.headName} · {money(h.amount)}
+            </Badge>
+          ))}
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <div className="max-h-[26rem] overflow-y-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Account Head</TableHead>
+                <TableHead>For Month</TableHead>
+                <TableHead className="text-right">Amount</TableHead>
+                <TableHead>Method</TableHead>
+                <TableHead>Note</TableHead>
+                {onChanged && <TableHead className="text-right">Action</TableHead>}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paged.pageItems.length === 0 ? (
+                <TableRow><TableCell colSpan={onChanged ? 7 : 6} className="text-center text-muted-foreground py-8">No expense records match the current filters.</TableCell></TableRow>
+              ) : paged.pageItems.map((r) => (
+                <TableRow key={r.id}>
+                  <TableCell className="whitespace-nowrap">{shortDate(r.date)}</TableCell>
+                  <TableCell className="font-medium">{r.headName}{r.isBackfill && <span className="ml-1 text-[10px] text-amber-600 dark:text-amber-400">(back-fill)</span>}</TableCell>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">{r.month.slice(0, 3)} {r.year}</TableCell>
+                  <TableCell className="text-right font-medium tabular-nums text-rose-600 dark:text-rose-400">{money(r.amount)}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{r.method === "BANK" ? "Bank" : r.method === "MOBILE_BANK" ? "Mobile" : "Cash"}</TableCell>
+                  <TableCell className="max-w-[16rem] truncate text-muted-foreground text-xs">{r.note || "—"}</TableCell>
+                  {onChanged && (
+                    <TableCell className="text-right whitespace-nowrap">
+                      <Button size="icon" variant="ghost" className="size-7" onClick={() => openEdit(r)} title="Edit this expense">
+                        <Pencil className="size-3.5 text-sky-500" />
+                      </Button>
+                      <Button size="icon" variant="ghost" className="size-7" onClick={() => deleteRow(r)} title="Delete this expense">
+                        <Trash2 className="size-3.5 text-rose-500" />
+                      </Button>
+                    </TableCell>
+                  )}
+                </TableRow>
+              ))}
+            </TableBody>
+            {data.rows.length > 0 && (
+              <TableFooter>
+                <TableRow>
+                  <TableCell colSpan={3}>Total — {data.count} record(s)</TableCell>
+                  <TableCell className="text-right font-bold">{money(data.totalAmount)}</TableCell>
+                  <TableCell colSpan={onChanged ? 3 : 2}></TableCell>
+                </TableRow>
+              </TableFooter>
+            )}
+          </Table>
+        </div>
+        <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
+      </div>
+
+      {/* Edit Expense dialog */}
+      <Dialog open={editOpen} onOpenChange={(o) => { if (!o) setEditOpen(false); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Pencil className="size-4" /> Edit Expense</DialogTitle>
+            <DialogDescription>
+              {editRow ? `${editRow.headName} — ${money(editRow.amount)} (${shortDate(editRow.date)})` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="text-xs">Account Head</Label>
+              <Select value={String(eHeadId ?? "")} onValueChange={(v) => setEHeadId(Number(v))}>
+                <SelectTrigger><SelectValue placeholder="Select account head" /></SelectTrigger>
+                <SelectContent>
+                  {heads.map((h) => <SelectItem key={h.id} value={String(h.id)}>{h.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Amount (৳)</Label>
+                <Input type="number" value={eAmount} onChange={(e) => setEAmount(Number(e.target.value))} />
+              </div>
+              <div>
+                <Label className="text-xs">Paid by</Label>
+                <Select value={eMethod} onValueChange={(v) => setEMethod(v as "CASH" | "BANK" | "MOBILE_BANK")}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="CASH">Cash</SelectItem>
+                    <SelectItem value="BANK">Bank</SelectItem>
+                    <SelectItem value="MOBILE_BANK">Mobile Bank</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Recorded Date</Label>
+                <Input type="date" value={eDate} onChange={(e) => setEDate(e.target.value)} />
+              </div>
+              <div>
+                <Label className="text-xs">For Month</Label>
+                <Select value={eMonth} onValueChange={setEMonth}>
+                  <SelectTrigger><SelectValue placeholder="Month" /></SelectTrigger>
+                  <SelectContent>
+                    {MONTHS.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">For Year</Label>
+                <Input type="number" value={eYear} onChange={(e) => setEYear(e.target.value)} />
+              </div>
+              <div>
+                <Label className="text-xs">Note</Label>
+                <Input value={eNote} onChange={(e) => setENote(e.target.value)} placeholder="optional" />
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground rounded-md bg-muted/50 p-3">
+              Changes here flow to the expense tracker, dashboard cash flow, day book, yearly report and account-head report — they all read from the same record + linked transaction.
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button onClick={submitEdit} disabled={eBusy}>
+              {eBusy ? "Saving…" : "Save Changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 function DueTable({ data }: { data: ClientDue }) {
   const paged = usePagination(data.rows, 15);
   return (
@@ -945,4 +1255,18 @@ function dueHTML(d: ClientDue): string {
     <table><thead><tr><th>Code</th><th>Tenant</th><th>Mobile</th><th>Status</th><th class="r">Outstanding</th><th class="r">Months</th><th class="r">Advance</th></tr></thead>
     <tbody>${rows}</tbody>
     <tfoot><tr><td colspan=4>Total</td><td class="r">${money(d.totalOutstanding)}</td><td colspan=2></td></tr></tfoot></table>`;
+}
+
+function expenseLedgerHTML(d: ExpLedger): string {
+  const rows = d.rows.map((r) => {
+    const m = r.method === "BANK" ? "Bank" : r.method === "MOBILE_BANK" ? "Mobile" : "Cash";
+    return `<tr><td>${shortDate(r.date)}</td><td>${r.headName}</td><td>${r.month.slice(0, 3)} ${r.year}</td><td class="r">${money(r.amount)}</td><td>${m}</td><td>${r.note || ""}</td></tr>`;
+  }).join("");
+  const byHead = d.byHead.map((h) => `<tr><td>${h.headName}</td><td class="r">${h.count}</td><td class="r">${money(h.amount)}</td></tr>`).join("");
+  return `<div class="muted">${d.count} record(s) · Total expense: ${money(d.totalAmount)}</div>
+    <table><thead><tr><th>Date</th><th>Account Head</th><th>For Month</th><th class="r">Amount</th><th>Method</th><th>Note</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr><td colspan=3>Total — ${d.count} record(s)</td><td class="r">${money(d.totalAmount)}</td><td colspan=2></td></tr></tfoot></table>
+    <h2 style="font-size:14px;margin-top:16px">By Account Head</h2>
+    <table><thead><tr><th>Head</th><th class="r">Records</th><th class="r">Amount</th></tr></thead><tbody>${byHead}</tbody></table>`;
 }

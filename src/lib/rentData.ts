@@ -149,6 +149,12 @@ export interface RentChange {
 }
 
 export interface ExpenseRec {
+  // Stable per-record id — lets the UI edit/delete a single expense entry.
+  // (Seeded legacy records get a synthetic id; new records get the next
+  // counter id.) The 1:1 link to the ledger transaction (transactionId) keeps
+  // every report (dashboard, day book, yearly, account-head) consistent on
+  // edit/delete — both stores are updated together.
+  id: number;
   headId: number;
   headName: string;
   month: string;
@@ -156,6 +162,9 @@ export interface ExpenseRec {
   amount: number;
   recordedDate: Date;
   isBackfill: boolean;
+  note: string;
+  method: PaymentMethod;
+  transactionId: number; // the ds.txns entry this record posts to
 }
 
 // F9 — multi-tenant SaaS: each client is an Organization. The owner org
@@ -207,6 +216,7 @@ interface RentProStore {
   leaseRentChanges: Map<number, RentChange[]>;
   nextCollectionId: number;
   nextTxnId: number;
+  nextExpenseRecId: number;
   nextSettlementId: number;
   settlements: SettlementRecord[];
   nextPropertyId: number;
@@ -231,6 +241,7 @@ function getStore(): RentProStore {
       leaseRentChanges: new Map(),
       nextCollectionId: 1_000_000,
       nextTxnId: 1_000_000,
+      nextExpenseRecId: 1_000_000,
       nextSettlementId: 1_000_000,
       settlements: [],
       nextPropertyId: 1_000_000,
@@ -260,6 +271,7 @@ function getStore(): RentProStore {
   if (s.leaseRentChanges === undefined) s.leaseRentChanges = new Map();
   if (s.nextCollectionId === undefined) s.nextCollectionId = 1_000_000;
   if (s.nextTxnId === undefined) s.nextTxnId = 1_000_000;
+  if (s.nextExpenseRecId === undefined) s.nextExpenseRecId = 1_000_000;
   if (s.organizations === undefined) s.organizations = null;
   if (s.activeOrgId === undefined) s.activeOrgId = null;
   if (s.nextOrgId === undefined) s.nextOrgId = 2;
@@ -1368,6 +1380,7 @@ export function exportState(): unknown {
       dataSource: S.dataSource,
       nextCollectionId: S.nextCollectionId,
       nextTxnId: S.nextTxnId,
+      nextExpenseRecId: S.nextExpenseRecId,
       nextSettlementId: S.nextSettlementId,
       nextPropertyId: S.nextPropertyId,
       nextUnitId: S.nextUnitId,
@@ -1427,6 +1440,7 @@ export function importState(data: any): { ok: boolean; error?: string } {
       S.activeOrgId = st.activeOrgId ?? null;
       S.nextCollectionId = st.nextCollectionId ?? 1_000_000;
       S.nextTxnId = st.nextTxnId ?? 1_000_000;
+      S.nextExpenseRecId = st.nextExpenseRecId ?? 1_000_000;
       S.nextSettlementId = st.nextSettlementId ?? 1_000_000;
       S.nextPropertyId = st.nextPropertyId ?? 1_000_000;
       S.nextUnitId = st.nextUnitId ?? 1_000_000;
@@ -2087,29 +2101,34 @@ export function collectRent(p: CollectPayload): {
 function ensureExpenseRecs(): ExpenseRec[] {
   if (S.expenseRecs) return S.expenseRecs;
   const ds = loadDataset();
-  const map = new Map<string, ExpenseRec>();
+  // Seed ONE expense record per EXPENSE ledger transaction (1:1), each with a
+  // stable id and a link back to its transaction (transactionId). This keeps
+  // per-record granularity so any single expense can be edited/deleted cleanly,
+  // while the expense tracker & reports still aggregate by (head, month, year)
+  // at display time — so all totals stay identical to the old aggregated seed.
+  //
+  // Legacy EXPENSE txns don't carry an explicit "for-month", so we attribute
+  // them to the month they were recorded in (recordedDate's month). New
+  // records (recordExpense) set the real for-month + recompute isBackfill.
+  const seeded: ExpenseRec[] = [];
   for (const t of ds.txns) {
     if (t.type !== "EXPENSE" || t.outAmount <= 0 || !t.transectionDate || !t.accountHeadId) continue;
     const y = String(t.transectionDate.getFullYear());
     const m = MONTHS[t.transectionDate.getMonth()];
-    const key = `${t.accountHeadId}|${m}|${y}`;
-    const ex = map.get(key);
-    if (ex) {
-      ex.amount += t.outAmount;
-      if (t.transectionDate > ex.recordedDate) ex.recordedDate = t.transectionDate;
-    } else {
-      map.set(key, {
-        headId: t.accountHeadId,
-        headName: t.accountHeadName,
-        month: m,
-        year: y,
-        amount: t.outAmount,
-        recordedDate: t.transectionDate,
-        isBackfill: false,
-      });
-    }
+    seeded.push({
+      id: S.nextExpenseRecId++,
+      headId: t.accountHeadId,
+      headName: t.accountHeadName,
+      month: m,
+      year: y,
+      amount: t.outAmount,
+      recordedDate: t.transectionDate,
+      isBackfill: false,
+      note: t.note ?? "",
+      method: t.method,
+      transactionId: t.id,
+    });
   }
-  const seeded: ExpenseRec[] = [...map.values()];
   S.expenseRecs = seeded;
   console.log(`[rentData] Seeded ${seeded.length} expense records from legacy transactions.`);
   return seeded;
@@ -2254,7 +2273,7 @@ export interface RecordExpensePayload {
 
 export function recordExpense(
   p: RecordExpensePayload
-): { ok: boolean; error?: string } {
+): { ok: boolean; error?: string; id?: number } {
   const ds = loadDataset();
   const recs = ensureExpenseRecs();
   const head = ds.accountHeads.find((a) => a.id === p.accountHeadId);
@@ -2265,9 +2284,30 @@ export function recordExpense(
   const forKey = keyFromYM(p.year, p.month);
   const recKey = date.getFullYear() * 12 + date.getMonth();
   const isBackfill = recKey !== forKey;
+  const note = p.note || `${head.name} — ${p.month} ${p.year}`;
+  const method = p.method ?? "CASH";
 
-  // 1) expense record (for-month attribution — what the tracker reads)
+  // 1) ledger transaction (cash-out, for dashboard cash flow sync) — created
+  // first so the expense record can link back to its transaction id.
+  const txnId = S.nextTxnId++;
+  ds.txns.push({
+    id: txnId,
+    inAmount: 0,
+    outAmount: Number(p.amount),
+    transectionDate: date,
+    note,
+    type: "EXPENSE",
+    accountHeadId: head.id,
+    accountHeadName: head.name,
+    method,
+    dataInsertedFrom: "ADD EXPENSE",
+  });
+
+  // 2) expense record (for-month attribution — what the tracker reads),
+  // linked back to its transaction so edit/delete keep both stores in sync.
+  const recId = S.nextExpenseRecId++;
   recs.push({
+    id: recId,
     headId: head.id,
     headName: head.name,
     month: p.month,
@@ -2275,23 +2315,12 @@ export function recordExpense(
     amount: Number(p.amount),
     recordedDate: date,
     isBackfill,
+    note,
+    method,
+    transactionId: txnId,
   });
 
-  // 2) ledger transaction (cash-out, for dashboard cash flow sync)
-  ds.txns.push({
-    id: S.nextTxnId++,
-    inAmount: 0,
-    outAmount: Number(p.amount),
-    transectionDate: date,
-    note: p.note || `${head.name} — ${p.month} ${p.year}`,
-    type: "EXPENSE",
-    accountHeadId: head.id,
-    accountHeadName: head.name,
-    method: p.method ?? "CASH",
-    dataInsertedFrom: "ADD EXPENSE",
-  });
-
-  return { ok: true };
+  return { ok: true, id: recId };
 }
 
 /** Convenience: record one expense for each of a list of (month, year) — used
@@ -2305,6 +2334,177 @@ export function recordExpenseBatch(
     if (!r.ok && r.error) errors.push(`${it.accountHeadId} ${it.month} ${it.year}: ${r.error}`);
   }
   return { ok: errors.length === 0, errors };
+}
+
+// --- edit an existing expense record (by id) -------------------------------
+// Updates BOTH the expense record (for-month attribution) AND its linked ledger
+// transaction, so every downstream calculation (dashboard cash flow, day book,
+// yearly report, account-head report) stays correct. The amount, account head,
+// recorded date, for-month, note and method can all be changed.
+export interface UpdateExpensePayload {
+  id: number;
+  accountHeadId?: number;
+  amount?: number;
+  date?: string;        // ISO recorded date
+  month?: string;       // for-month
+  year?: string;        // for-year
+  note?: string;
+  method?: PaymentMethod;
+}
+export function updateExpense(opts: UpdateExpensePayload): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const recs = ensureExpenseRecs();
+  const rec = recs.find((r) => r.id === opts.id);
+  if (!rec) return { ok: false, error: "Expense record not found" };
+
+  // resolve the new account head (if changing)
+  let head = rec.headId ? ds.accountHeads.find((a) => a.id === rec.headId) : undefined;
+  if (opts.accountHeadId !== undefined) {
+    const nh = ds.accountHeads.find((a) => a.id === opts.accountHeadId);
+    if (!nh) return { ok: false, error: "Expense head not found" };
+    head = nh;
+  }
+
+  // resolve the new amount
+  const amount = opts.amount !== undefined ? Number(opts.amount) : rec.amount;
+  if (!(amount > 0)) return { ok: false, error: "Amount must be greater than zero" };
+
+  // resolve the new recorded date
+  const date = opts.date !== undefined ? (opts.date ? new Date(opts.date) : new Date()) : rec.recordedDate;
+
+  // resolve for-month/year + recompute isBackfill
+  const month = opts.month ?? rec.month;
+  const year = opts.year ?? rec.year;
+  const forKey = keyFromYM(year, month);
+  const recKey = date.getFullYear() * 12 + date.getMonth();
+  const isBackfill = recKey !== forKey;
+
+  const note = opts.note !== undefined ? String(opts.note) : rec.note;
+  const method = opts.method ?? rec.method;
+  const headName = head?.name ?? rec.headName;
+  const headId = head?.id ?? rec.headId;
+
+  // 1) update the expense record
+  rec.headId = headId;
+  rec.headName = headName;
+  rec.month = month;
+  rec.year = year;
+  rec.amount = amount;
+  rec.recordedDate = date;
+  rec.isBackfill = isBackfill;
+  rec.note = note;
+  rec.method = method;
+
+  // 2) update the linked ledger transaction (if it still exists) so the day
+  // book, yearly report and account-head report reflect the new amount/head/date.
+  if (rec.transactionId) {
+    const txn = ds.txns.find((t) => t.id === rec.transactionId);
+    if (txn) {
+      txn.outAmount = amount;
+      txn.inAmount = 0;
+      txn.transectionDate = date;
+      txn.note = note || `${headName} — ${month} ${year}`;
+      txn.accountHeadId = headId;
+      txn.accountHeadName = headName;
+      txn.method = method;
+      // type stays "EXPENSE"; dataInsertedFrom stays as the original marker.
+    }
+  }
+
+  return { ok: true };
+}
+
+// --- delete an existing expense record (by id) -----------------------------
+// Removes BOTH the expense record AND its linked ledger transaction, so the
+// dashboard cash flow, day book, yearly report and account-head report all
+// reflect the deletion. (Unlike the rent-collection delete — which historically
+// left the income txn orphaned — expense delete keeps the ledger consistent.)
+export function deleteExpense(id: number): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const recs = ensureExpenseRecs();
+  const idx = recs.findIndex((r) => r.id === id);
+  if (idx === -1) return { ok: false, error: "Expense record not found" };
+  const rec = recs[idx];
+  // remove the linked ledger transaction (if present)
+  if (rec.transactionId) {
+    const tidx = ds.txns.findIndex((t) => t.id === rec.transactionId);
+    if (tidx !== -1) ds.txns.splice(tidx, 1);
+  }
+  // remove the expense record
+  recs.splice(idx, 1);
+  return { ok: true };
+}
+
+// --- Expense Ledger report ------------------------------------------------
+// Every individual expense record (NOT aggregated), filterable by multiple
+// account heads + an optional date range. Each row carries its stable id so the
+// UI can render per-row Edit / Delete actions — the place a manager goes to
+// correct a wrongly-entered expense (wrong amount / head / date) or remove one
+// entered by mistake. Totals + a per-head breakdown are returned for the summary.
+export interface ExpenseLedgerRow {
+  id: number;
+  headId: number;
+  headName: string;
+  date: string;        // recorded date (YYYY-MM-DD)
+  month: string;       // for-month
+  year: string;        // for-year
+  amount: number;
+  note: string;
+  method: PaymentMethod;
+  isBackfill: boolean;
+}
+export interface ExpenseLedgerReport {
+  rows: ExpenseLedgerRow[];
+  totalAmount: number;
+  count: number;
+  byHead: Array<{ headId: number; headName: string; count: number; amount: number }>;
+}
+export function getExpenseLedgerReport(opts: {
+  headIds?: number[];
+  fromDate?: string;
+  toDate?: string;
+}): ExpenseLedgerReport {
+  const recs = ensureExpenseRecs();
+  const headSet = opts.headIds && opts.headIds.length > 0 ? new Set(opts.headIds) : null;
+  const from = opts.fromDate ? new Date(opts.fromDate + "T00:00:00") : null;
+  const to = opts.toDate ? new Date(opts.toDate + "T23:59:59") : null;
+
+  const filtered = recs.filter((r) => {
+    if (headSet && !headSet.has(r.headId)) return false;
+    if (from && (!r.recordedDate || r.recordedDate < from)) return false;
+    if (to && (!r.recordedDate || r.recordedDate > to)) return false;
+    return true;
+  });
+
+  // newest first
+  filtered.sort((a, b) => (b.recordedDate.getTime() - a.recordedDate.getTime()));
+
+  const rows: ExpenseLedgerRow[] = filtered.map((r) => ({
+    id: r.id,
+    headId: r.headId,
+    headName: r.headName,
+    date: dateOnly(r.recordedDate)!,
+    month: r.month,
+    year: r.year,
+    amount: r.amount,
+    note: r.note,
+    method: r.method,
+    isBackfill: r.isBackfill,
+  }));
+
+  const totalAmount = rows.reduce((s, r) => s + r.amount, 0);
+
+  // per-head breakdown (sorted by amount desc)
+  const headMap = new Map<number, { headId: number; headName: string; count: number; amount: number }>();
+  for (const r of rows) {
+    const ex = headMap.get(r.headId) ?? { headId: r.headId, headName: r.headName, count: 0, amount: 0 };
+    ex.count += 1;
+    ex.amount += r.amount;
+    headMap.set(r.headId, ex);
+  }
+  const byHead = [...headMap.values()].sort((a, b) => b.amount - a.amount);
+
+  return { rows, totalAmount, count: rows.length, byHead };
 }
 
 /** All expense account heads — for the record dialog's type dropdown. */
