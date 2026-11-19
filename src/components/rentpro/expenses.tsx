@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Receipt, CheckCircle2, AlertTriangle, History, Plus, Zap, Wallet, Pencil, Tags, Repeat,
+  Receipt, AlertTriangle, History, Plus, Zap, Wallet, Pencil, Tags, Repeat,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -171,7 +171,6 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
     }
   }
 
-  const typesPaged = usePagination(tracker?.types ?? [], 12);
   const duePaged = usePagination(tracker ? tracker.types.filter((t) => t.recurring && !t.recordedInAsOf) : [], 8);
   const allHeadsPaged = usePagination(allHeads, 12);
 
@@ -221,9 +220,6 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
     );
   }
 
-  const dueTypes = tracker.types.filter((t) => t.recurring && !t.recordedInAsOf);
-  const recordedTypes = tracker.types.filter((t) => t.recordedInAsOf);
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -240,46 +236,6 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
         <Button onClick={openNew} variant="outline">
           <Plus className="size-4" /> Record Expense
         </Button>
-      </div>
-
-      {/* Summary */}
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="size-11 rounded-lg grid place-items-center bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300">
-              <CheckCircle2 className="size-5" />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">Recorded This Month</div>
-              <div className="text-xl font-bold">{tracker.recordedCount} types</div>
-              <div className="text-xs text-muted-foreground">{money(tracker.recordedTotal)}</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="size-11 rounded-lg grid place-items-center bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-300">
-              <AlertTriangle className="size-5" />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">Due This Month</div>
-              <div className="text-xl font-bold">{tracker.dueCount} types</div>
-              <div className="text-xs text-muted-foreground">~ {money(tracker.dueTotal)} predicted</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="size-11 rounded-lg grid place-items-center bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-300">
-              <History className="size-5" />
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">Back-fill Needed</div>
-              <div className="text-xl font-bold">{tracker.backfillCount} months</div>
-              <div className="text-xs text-muted-foreground">across {dueTypes.length} recurring types</div>
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
       {/* Due / missing — the pain point */}
@@ -339,97 +295,6 @@ export function ExpensesView({ month, year }: { month: string; year: string }) {
             </div>
           </div>
           <Pager page={duePaged.page} totalPages={duePaged.totalPages} total={duePaged.total} pageSize={duePaged.pageSize} onPrev={duePaged.prev} onNext={duePaged.next} />
-        </CardContent>
-      </Card>
-
-      {/* Recorded this month */}
-      {recordedTypes.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <CheckCircle2 className="size-4 text-emerald-600" />
-              Recorded This Month — {money(tracker.recordedTotal)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="max-h-64 overflow-y-auto">
-              <div className="divide-y">
-                {recordedTypes.map((t) => (
-                  <div key={t.headId} className="px-4 py-3 flex items-center gap-3 hover:bg-muted/40">
-                    <div className="flex-1">
-                      <div className="font-medium text-sm">{t.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {t.recurring ? "Recurring" : "One-off"} · {t.recordCount} months on record
-                        {t.backfilledCount > 0 && <> · {t.backfilledCount} back-filled</>}
-                      </div>
-                    </div>
-                    <div className="font-semibold text-sm">{money(t.asOfAmount)}</div>
-                    <Button size="sm" variant="ghost" onClick={() => openRecord(t)}>+ Month</Button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Full table */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">All Expense Types</CardTitle>
-          <CardDescription>Recent history per type (last 6 months)</CardDescription>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="max-h-96 overflow-y-auto">
-            <div className="divide-y">
-              {typesPaged.pageItems.length === 0 ? (
-                <div className="p-8 text-center text-sm text-muted-foreground">No expense records yet.</div>
-              ) : typesPaged.pageItems.map((t) => (
-                <div key={t.headId} className="px-4 py-3 hover:bg-muted/40">
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium text-sm flex items-center gap-2">
-                        {t.name}
-                        {t.recurring
-                          ? <Badge variant="secondary" className="text-[10px]">Recurring</Badge>
-                          : <Badge variant="outline" className="text-[10px]">One-off</Badge>}
-                      </div>
-                      {/* recent history as compact text */}
-                      {t.recent.length > 0 && (
-                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1.5 text-[10px] text-muted-foreground">
-                          {t.recent.slice().reverse().map((r, i) => (
-                            <span key={i} title={`${r.month} ${r.year}`}>
-                              {r.month.slice(0, 3)} {r.year.slice(-2)}: <span className="font-medium text-foreground">{money(r.amount)}</span>
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div className="text-right w-24">
-                      {t.recordedInAsOf ? (
-                        <>
-                          <div className="text-xs text-emerald-600 dark:text-emerald-400">Recorded</div>
-                          <div className="font-semibold text-sm">{money(t.asOfAmount)}</div>
-                        </>
-                      ) : t.recurring ? (
-                        <>
-                          <div className="text-xs text-rose-600 dark:text-rose-400">Missing</div>
-                          <div className="text-xs text-muted-foreground">~ {money(t.predictedAmount)}</div>
-                        </>
-                      ) : (
-                        <div className="text-xs text-muted-foreground">—</div>
-                      )}
-                    </div>
-                    {t.missingMonths.length > 0 && (
-                      <Badge className="bg-rose-100 text-rose-700 hover:bg-rose-100 text-[10px]">{t.missingMonths.length} due</Badge>
-                    )}
-                    <Button size="sm" variant="ghost" onClick={() => openRecord(t)}>Record</Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-          <Pager page={typesPaged.page} totalPages={typesPaged.totalPages} total={typesPaged.total} pageSize={typesPaged.pageSize} onPrev={typesPaged.prev} onNext={typesPaged.next} />
         </CardContent>
       </Card>
 
