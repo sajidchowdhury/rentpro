@@ -1615,6 +1615,7 @@ export function getTenantList(
       if (startK === null) continue;
       const fromK = Math.max(startK, asOfKey - 23); // last 24 months
       for (let k = fromK; k <= asOfKey; k++) {
+        if (!leaseCoversMonth(l, k)) continue;
         const y = Math.floor(k / 12);
         const m = MONTHS[k % 12];
         const collected = ds.collections
@@ -1686,6 +1687,7 @@ export function getTenants(
       if (startK === null) continue;
       const fromK = Math.max(startK, asOfKey - 23);
       for (let k = fromK; k <= asOfKey; k++) {
+        if (!leaseCoversMonth(l, k)) continue;
         const y = Math.floor(k / 12);
         const m = MONTHS[k % 12];
         const collected = ds.collections
@@ -1861,6 +1863,7 @@ export function getTenantLedger(
     if (startK === null) continue;
     const fromK = Math.max(startK, asOfKey - 23);
     for (let k = fromK; k <= asOfKey; k++) {
+      if (!leaseCoversMonth(l, k)) continue;
       const y = Math.floor(k / 12);
       const m = MONTHS[k % 12];
       // skip waived months (tenant was gone — no rent due)
@@ -2639,6 +2642,7 @@ export function getActiveLeases(asOfMonth: string, asOfYear: string): ActiveLeas
     let outstandingMonths = 0;
     let outstandingTotal = 0;
     for (let k = fromK; k <= asOfKey; k++) {
+      if (!leaseCoversMonth(l, k)) continue;
       const y = Math.floor(k / 12);
       const m = MONTHS[k % 12];
       const collected = ds.collections
@@ -2731,6 +2735,7 @@ export function getSettlementPreview(
 
   const outstandingMonths: OutstandingMonth[] = [];
   for (let k = fromK; k <= vacateKey; k++) {
+    if (!leaseCoversMonth(lease, k)) continue;
     const y = Math.floor(k / 12);
     const m = MONTHS[k % 12];
     const collected = ds.collections
@@ -3520,6 +3525,7 @@ export function getClientLedgerStatement(
     if (startK === null) continue;
     const fromK = Math.max(startK, fromKey);
     for (let k = fromK; k <= asOfKey; k++) {
+      if (!leaseCoversMonth(l, k)) continue;
       const y = String(Math.floor(k / 12));
       const m = MONTHS[k % 12];
       // use the rent that was in effect for this month (rent-change history)
