@@ -15,10 +15,15 @@ import { Separator } from "@/components/ui/separator";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { money, shortDate } from "@/lib/format";
 import { usePagination } from "@/lib/use-pagination";
 import { Pager } from "@/components/rentpro/pager";
 import { toast } from "sonner";
+
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 interface TenantDir {
   id: number; code: string; name: string; mobile: string | null;
@@ -52,13 +57,16 @@ export function TenantsView({
   // rent-change dialog
   const [rcOpen, setRcOpen] = useState(false);
   const [rcLeaseId, setRcLeaseId] = useState<number | null>(null);
-  const [rcDate, setRcDate] = useState("");
+  const [rcCurrentRent, setRcCurrentRent] = useState(0);
+  const [rcMonth, setRcMonth] = useState("");
+  const [rcYear, setRcYear] = useState("");
   const [rcRent, setRcRent] = useState(0);
   const [rcGas, setRcGas] = useState(0);
   const [rcService, setRcService] = useState(0);
   const [rcOther, setRcOther] = useState(0);
   const [rcReason, setRcReason] = useState("");
   const [rcBusy, setRcBusy] = useState(false);
+  const [rcExisting, setRcExisting] = useState<Array<{ effectiveDate: string; rent: number; reason: string }>>([]);
 
   // edit-tenant dialog
   const [editOpen, setEditOpen] = useState(false);
@@ -124,34 +132,64 @@ export function TenantsView({
     } catch { toast.error("Failed to delete"); }
   }
 
-  function openRentChange(l: { id: number; rent: number }) {
+  async function openRentChange(l: { id: number; rent: number }) {
     setRcLeaseId(l.id);
-    setRcDate(new Date().toISOString().slice(0, 10));
-    setRcRent(l.rent);
+    setRcCurrentRent(l.rent);
+    setRcRent(l.rent); // default new rent = current (user adjusts)
     setRcGas(0); setRcService(0); setRcOther(0);
     setRcReason("");
+    const now = new Date();
+    setRcMonth(MONTHS[now.getMonth()]);
+    setRcYear(String(now.getFullYear()));
+    setRcExisting([]);
     setRcOpen(true);
+    // fetch existing rent changes for this lease (in the background)
+    try {
+      const r = await fetch(`/api/lease/rent-changes?leaseId=${l.id}`);
+      const d = await r.json();
+      setRcExisting(d.changes ?? []);
+    } catch { /* ignore */ }
   }
   async function submitRentChange() {
-    if (!rcLeaseId || !rcDate) { toast.error("Date is required"); return; }
+    if (!rcLeaseId || !rcMonth || !rcYear) { toast.error("Month and year are required"); return; }
+    if (!(rcRent > 0)) { toast.error("New rent must be greater than zero"); return; }
+    // effectiveDate = first day of the selected month
+    const effectiveDate = `${rcYear}-${String(MONTHS.indexOf(rcMonth) + 1).padStart(2, "0")}-01`;
     setRcBusy(true);
     try {
       const r = await fetch("/api/lease/rent-change", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          leaseId: rcLeaseId, effectiveDate: rcDate,
+          leaseId: rcLeaseId, effectiveDate,
           rent: rcRent, gasBill: rcGas, serviceCharge: rcService, otherBill: rcOther,
           reason: rcReason,
         }),
       });
       const d = await r.json();
       if (d.ok) {
-        toast.success("Rent change recorded");
+        toast.success(`Rent change recorded — ${rcMonth} ${rcYear}`);
         setRcOpen(false);
         refreshLedger();
       } else toast.error(d.error ?? "Failed");
     } catch { toast.error("Failed to save"); }
     finally { setRcBusy(false); }
+  }
+  async function deleteRentChangeEntry(effectiveDate: string) {
+    if (!rcLeaseId) return;
+    if (!confirm(`Delete this rent change (effective ${effectiveDate})?\n\nThe rent will revert to the previous value for affected months.`)) return;
+    try {
+      const r = await fetch("/api/lease/rent-change/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leaseId: rcLeaseId, effectiveDate }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        toast.success("Rent change deleted");
+        // refresh existing list + the ledger
+        setRcExisting((prev) => prev.filter((c) => c.effectiveDate !== effectiveDate));
+        refreshLedger();
+      } else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to delete"); }
   }
 
   const refreshList = useCallback(async () => {
@@ -396,19 +434,44 @@ export function TenantsView({
 
       {/* Rent Change dialog */}
       <Dialog open={rcOpen} onOpenChange={(o) => { if (!o) setRcOpen(false); }}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><TrendingDown className="size-4" /> Record Rent Change</DialogTitle>
-            <DialogDescription>Track when the rent changed and why (e.g. room made smaller, rent increased). The ledger will show the correct rent for each period.</DialogDescription>
+            <DialogDescription>The new rent applies from the selected month onward. The ledger, dashboard, day book, and reports all update automatically.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div>
-              <Label className="text-xs">Effective date (first month the new rent applies)</Label>
-              <Input type="date" value={rcDate} onChange={(e) => setRcDate(e.target.value)} />
+            {/* current rent display */}
+            <div className="rounded-md bg-muted/60 px-3 py-2 text-sm flex items-center justify-between">
+              <span className="text-muted-foreground">Current rent</span>
+              <span className="font-bold text-lg">৳{rcCurrentRent.toLocaleString()}</span>
             </div>
+
+            {/* effective month + year */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="text-xs">New rent (৳)</Label>
+                <Label className="text-xs">Effective from month</Label>
+                <Select value={rcMonth} onValueChange={setRcMonth}>
+                  <SelectTrigger><SelectValue placeholder="Month" /></SelectTrigger>
+                  <SelectContent>
+                    {MONTHS.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Year</Label>
+                <Select value={rcYear} onValueChange={setRcYear}>
+                  <SelectTrigger><SelectValue placeholder="Year" /></SelectTrigger>
+                  <SelectContent>
+                    {["2022","2023","2024","2025","2026","2027"].map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* new rent + bills */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">New rent (৳) <span className="text-rose-500">*</span></Label>
                 <Input type="number" value={rcRent} onChange={(e) => setRcRent(Number(e.target.value))} />
               </div>
               <div>
@@ -426,12 +489,54 @@ export function TenantsView({
             </div>
             <div>
               <Label className="text-xs">Reason (shown in the ledger)</Label>
-              <Input value={rcReason} onChange={(e) => setRcReason(e.target.value)} placeholder="e.g. Room made smaller, split into two. Rent reduced from 5000 to 2000." />
+              <Input value={rcReason} onChange={(e) => setRcReason(e.target.value)} placeholder="e.g. Room split into two, rent reduced from 5000 to 3000" />
             </div>
+
+            {/* live preview */}
+            {rcMonth && rcYear && rcRent > 0 && (
+              <div className="rounded-md border border-blue-200 bg-blue-50/50 dark:border-blue-900 dark:bg-blue-950/20 px-3 py-2.5 text-xs">
+                <div className="font-medium text-blue-700 dark:text-blue-300 mb-1">Preview</div>
+                <div className="text-muted-foreground">
+                  From <span className="font-medium text-foreground">{rcMonth} {rcYear}</span> onward, the rent will be
+                  <span className="font-medium text-rose-600 dark:text-rose-400"> ৳{rcRent.toLocaleString()}</span>
+                  {rcRent !== rcCurrentRent && (
+                    <span className="text-emerald-600 dark:text-emerald-400"> ({rcRent < rcCurrentRent ? "down" : "up"} from ৳{rcCurrentRent.toLocaleString()})</span>
+                  )}.
+                </div>
+                <div className="text-muted-foreground mt-0.5">
+                  Months before {rcMonth} {rcYear} keep the rent that was in effect then.
+                </div>
+              </div>
+            )}
+
+            {/* existing rent changes (with delete) */}
+            {rcExisting.length > 0 && (
+              <div className="rounded-md border px-3 py-2.5">
+                <div className="text-xs font-medium text-muted-foreground mb-2">Existing rent changes for this lease</div>
+                <div className="space-y-1.5">
+                  {rcExisting.map((c, i) => {
+                    const [y, mo] = c.effectiveDate.split("-");
+                    const monthName = MONTHS[Number(mo) - 1];
+                    return (
+                      <div key={i} className="flex items-center gap-2 text-sm rounded-md bg-muted/40 px-2 py-1.5">
+                        <div className="flex-1 min-w-0">
+                          <span className="font-medium">{monthName} {y}</span>
+                          <span className="text-muted-foreground"> → ৳{c.rent.toLocaleString()}</span>
+                          {c.reason && <span className="text-muted-foreground text-xs"> · {c.reason}</span>}
+                        </div>
+                        <Button size="icon" variant="ghost" className="size-6 text-rose-600 hover:text-rose-700 shrink-0" onClick={() => deleteRentChangeEntry(c.effectiveDate)} title="Delete this rent change">
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRcOpen(false)}>Cancel</Button>
-            <Button onClick={submitRentChange} disabled={rcBusy || !rcDate}>
+            <Button onClick={submitRentChange} disabled={rcBusy || !rcMonth || !rcYear || !(rcRent > 0)}>
               {rcBusy ? "Saving…" : "Record Change"}
             </Button>
           </DialogFooter>

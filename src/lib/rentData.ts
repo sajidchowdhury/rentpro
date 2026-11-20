@@ -1323,7 +1323,51 @@ export function addRentChange(
 }
 
 export function getLeaseRentChanges(leaseId: number): RentChange[] {
-  return S.leaseRentChanges.get(leaseId) ?? [];
+  return (S.leaseRentChanges.get(leaseId) ?? []).slice().sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+}
+
+/** Delete a single rent-change entry from a lease's history, identified by its
+ *  effectiveDate (ISO date string). If it was the only/first change, the
+ *  `original*` snapshot on the lease is cleared so a future first-change can
+ *  re-capture it. The lease's current rent is NOT touched (it stays at the
+ *  latest remaining change's rent, or the original if none remain). */
+export function deleteRentChange(leaseId: number, effectiveDate: string): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const changes = S.leaseRentChanges.get(leaseId);
+  if (!changes) return { ok: false, error: "No rent changes for this lease" };
+  const idx = changes.findIndex((c) => c.effectiveDate === effectiveDate);
+  if (idx === -1) return { ok: false, error: "Rent change not found" };
+  changes.splice(idx, 1);
+  const lease = ds.leases.find((l) => l.id === leaseId);
+  if (changes.length === 0) {
+    // no changes left — clear the leaseRentChanges entry and reset lease.rent
+    // to the original (the snapshot captured on the now-deleted first change)
+    S.leaseRentChanges.delete(leaseId);
+    if (lease && lease.originalRent !== undefined) {
+      lease.rent = lease.originalRent;
+      lease.gasBill = lease.originalGasBill ?? 0;
+      lease.moylarBill = lease.originalMoylarBill ?? 0;
+      lease.serviceCharge = lease.originalServiceCharge ?? 0;
+      lease.otherBill = lease.originalOtherBill ?? 0;
+      lease.originalRent = undefined;
+      lease.originalGasBill = undefined;
+      lease.originalMoylarBill = undefined;
+      lease.originalServiceCharge = undefined;
+      lease.originalOtherBill = undefined;
+    }
+  } else {
+    // remaining changes — update lease.rent to the latest one
+    const latest = changes[changes.length - 1];
+    if (lease) {
+      lease.rent = latest.rent;
+      lease.gasBill = latest.gasBill;
+      lease.moylarBill = latest.moylarBill;
+      lease.serviceCharge = latest.serviceCharge;
+      lease.otherBill = latest.otherBill;
+    }
+    S.leaseRentChanges.set(leaseId, changes);
+  }
+  return { ok: true };
 }
 
 // Returns the rent/bills that were in effect for a lease at a given month.
