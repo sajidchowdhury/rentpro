@@ -135,3 +135,42 @@ leases.advance_payment  = 220000.00
 - [ ] No (or only expected) `WARNINGS`.
 - [ ] Spot-check 5–10 tenants + their collections in `prisma studio`.
 - [ ] Run the legacy PHP system read-only for one full month, then retire it.
+
+---
+
+## Utility: rebuild-tenant-rent-history.js
+
+A one-off Node.js utility that rewrites a **single tenant's** entire rent
+history inside a RentPro backup JSON file. Use it to correct a tenant whose
+lease/rent/collection data has drifted (e.g. a room-split rent change that
+wasn't recorded cleanly, leaving phantom dues or mismatched rent-vs-received).
+
+It touches **only** the tenant + lease you specify — every other tenant's
+data is untouched. The output is a NEW backup file you restore via
+**Platform → Backup & Restore**.
+
+### Usage
+
+```bash
+# 1. edit the CONFIG block at the top of the script for your tenant
+#    (tenant code, lease id, lease window, old/new rent, change date,
+#     receive-day-of-month, bills, reason)
+# 2. run it against your backup
+node scripts/rebuild-tenant-rent-history.js <input-backup.json> <output-backup.json>
+# 3. restore the output via Platform → Backup & Restore
+```
+
+What it does, in order:
+1. Sets the lease window (`agreementStart` / `agreementEnd`) and current rent.
+2. Captures the pre-change rent (`originalRent`) so `getRentForMonth` returns
+   the correct historical rent for months before the rent change.
+3. Records the rent change in `leaseRentChanges` (old → new, effective date).
+4. Removes all existing collections + matching `RENT COLLECTION` transactions
+   for that lease, plus any waived months and tenant adjustments.
+5. Creates new `DONE` collections (one per month in the lease window) at the
+   correct rent for each period, with `receiveDate` = the configured day of
+   the **previous** month, plus matching income transactions.
+
+The script is safe to re-run (idempotent: it wipes + rebuilds only the
+target lease's data each time).
+
