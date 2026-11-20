@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Wallet, CheckCircle2, AlertCircle, Home, Building2, TrendingUp, TrendingDown, Phone, ArrowUpRight, Receipt, CalendarClock, RefreshCw, Repeat,
+  Wallet, CheckCircle2, AlertCircle, Home, Building2, TrendingUp, TrendingDown, Phone, ArrowUpRight, CalendarClock, RefreshCw, Repeat,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -77,7 +77,7 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
     month, year, generated, totalToCollect, expectedLeaseCount,
     collectedAmount, paidLeaseCount, pendingAmount, dueLeaseCount,
     vacantUnitCount, occupiedUnitCount, totalUnits, totalProperties,
-    incomeThisMonth, expenseThisMonth, dueLeases, vacantUnits, recentCollections, trend, expenseDue,
+    incomeThisMonth, expenseThisMonth, dueLeases, vacantUnits, recentCollections, trend,
     recurringExpenses, rentStatusTimeline,
   } = data;
   const duePaged = usePagination(dueLeases, 8);
@@ -133,44 +133,6 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
         />
       </div>
 
-      {/* Due expenses banner (F3) — missing monthly bills, front-of-mind */}
-      <Card className={expenseDue.count > 0 ? "border-rose-200 dark:border-rose-900" : ""}>
-        <CardContent className="p-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className={`size-10 rounded-lg grid place-items-center shrink-0 ${expenseDue.count > 0 ? "bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-300" : "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300"}`}>
-              <Receipt className="size-5" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="font-semibold text-sm flex items-center gap-2">
-                {expenseDue.count > 0
-                  ? <>{expenseDue.count} expense type{expenseDue.count > 1 ? "s" : ""} due — {month} {year}</>
-                  : <>All recurring expenses recorded — {month} {year} 🎉</>}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {expenseDue.count > 0
-                  ? <>~ {money(expenseDue.predictedTotal)} predicted · missing bills accumulate until recorded</>
-                  : "Nothing missing."}
-              </div>
-            </div>
-            {expenseDue.count > 0 && (
-              <div className="hidden md:flex flex-wrap gap-1.5 max-w-[40%]">
-                {expenseDue.types.slice(0, 4).map((t) => (
-                  <span key={t.headId} className="text-[11px] px-2 py-1 rounded-md bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 whitespace-nowrap" title={`${t.name} — ${t.missingCount} month(s) missing · last: ${t.lastRecorded ?? "—"}`}>
-                    {t.name.length > 18 ? t.name.slice(0, 17) + "…" : t.name} · {t.missingCount}mo
-                  </span>
-                ))}
-                {expenseDue.count > 4 && <span className="text-[11px] text-muted-foreground self-center">+{expenseDue.count - 4}</span>}
-              </div>
-            )}
-            {expenseDue.count > 0 && (
-              <Button size="sm" onClick={onGoToExpenses}>
-                Record now <ArrowUpRight className="size-3.5" />
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
       {/* Monthly Rent Status timeline — shows which months have rent generated
           vs missing, so the manager can see "July done, Aug/Sep/Oct missing =
           3 months behind" at a glance. */}
@@ -223,8 +185,10 @@ export function DashboardView({ data, onGoToExpenses }: { data: DashboardData; o
         </CardContent>
       </Card>
 
-      {/* Recurring Monthly Expenses — full checklist of monthly bills with
-          recorded/pending status for the selected month. */}
+      {/* Recurring Monthly Expenses — the full checklist of monthly bills
+          explicitly flagged "Show on the dashboard's monthly checklist" (set
+          during expense-type setup). Shows recorded + pending status for the
+          selected month. One-off expenses never appear here. */}
       {recurringExpenses.length > 0 && (
         <Card>
           <CardHeader className="pb-3">

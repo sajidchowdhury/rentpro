@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  Users, Search, Phone, Wallet, ArrowRight, CheckCircle2, Receipt, Building2, TrendingDown,
+  Users, Search, Phone, Wallet, ArrowRight, CheckCircle2, Receipt, Building2, TrendingDown, Pencil, Trash2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -59,6 +59,70 @@ export function TenantsView({
   const [rcOther, setRcOther] = useState(0);
   const [rcReason, setRcReason] = useState("");
   const [rcBusy, setRcBusy] = useState(false);
+
+  // edit-tenant dialog
+  const [editOpen, setEditOpen] = useState(false);
+  const [editTenant, setEditTenant] = useState<TenantDir | null>(null);
+  const [eName, setEName] = useState("");
+  const [eCode, setECode] = useState("");
+  const [eMobile, setEMobile] = useState("");
+  const [eFamily, setEFamily] = useState("");
+  const [eStatus, setEStatus] = useState<"ACTIVE" | "GONE">("ACTIVE");
+  const [eBusy, setEBusy] = useState(false);
+
+  function openEdit(t: TenantDir) {
+    setEditTenant(t);
+    setEName(t.name);
+    setECode(t.code);
+    setEMobile(t.mobile ?? "");
+    setEFamily(t.familyMember ?? "");
+    setEStatus(t.status);
+    setEditOpen(true);
+  }
+  async function submitEdit() {
+    if (!editTenant) return;
+    if (!eName.trim()) { toast.error("Name is required"); return; }
+    if (!eCode.trim()) { toast.error("Code is required"); return; }
+    setEBusy(true);
+    try {
+      const r = await fetch("/api/tenant/update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editTenant.id,
+          name: eName.trim(),
+          code: eCode.trim(),
+          mobile: eMobile.trim() || null,
+          familyMember: eFamily.trim() || null,
+          status: eStatus,
+        }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        toast.success("Tenant updated");
+        setEditOpen(false);
+        await refreshList();
+        if (selectedId === editTenant.id) await refreshLedger();
+      } else toast.error(d.error ?? "Failed");
+    } catch { toast.error("Failed to update"); }
+    finally { setEBusy(false); }
+  }
+  async function deleteTenant(t: TenantDir) {
+    if (!confirm(`Delete tenant "${t.name}" (${t.code})?\n\nThis is only allowed if the tenant has no transactions (collections, leases, adjustments).`)) return;
+    try {
+      const r = await fetch("/api/tenant/delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: t.id }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        toast.success("Tenant deleted");
+        if (selectedId === t.id) setSelectedId(null);
+        await refreshList();
+      } else {
+        toast.error(d.error ?? "Failed");
+      }
+    } catch { toast.error("Failed to delete"); }
+  }
 
   function openRentChange(l: { id: number; rent: number }) {
     setRcLeaseId(l.id);
@@ -175,10 +239,10 @@ export function TenantsView({
                 ) : paged.pageItems.length === 0 ? (
                   <div className="p-6 text-sm text-muted-foreground text-center">No tenants match.</div>
                 ) : paged.pageItems.map((t) => (
-                  <button
+                  <div
                     key={t.id}
                     onClick={() => setSelectedId(t.id)}
-                    className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${selectedId === t.id ? "bg-accent" : "hover:bg-muted/50"}`}
+                    className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors cursor-pointer ${selectedId === t.id ? "bg-accent" : "hover:bg-muted/50"}`}
                   >
                     <div className={`size-9 rounded-full grid place-items-center text-xs font-semibold shrink-0 ${t.status === "GONE" ? "bg-muted text-muted-foreground" : "bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300"}`}>
                       {t.code}
@@ -201,7 +265,15 @@ export function TenantsView({
                     ) : (
                       <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100 text-[10px]">Clear</Badge>
                     )}
-                  </button>
+                    <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                      <Button size="icon" variant="ghost" className="size-7" onClick={() => openEdit(t)} title="Edit tenant">
+                        <Pencil className="size-3.5 text-sky-500" />
+                      </Button>
+                      <Button size="icon" variant="ghost" className="size-7 text-rose-600 hover:text-rose-700" onClick={() => deleteTenant(t)} title="Delete tenant (blocked if it has transactions)">
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -361,6 +433,54 @@ export function TenantsView({
             <Button variant="outline" onClick={() => setRcOpen(false)}>Cancel</Button>
             <Button onClick={submitRentChange} disabled={rcBusy || !rcDate}>
               {rcBusy ? "Saving…" : "Record Change"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Tenant dialog */}
+      <Dialog open={editOpen} onOpenChange={(o) => { if (!o) setEditOpen(false); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Pencil className="size-4" /> Edit Tenant</DialogTitle>
+            <DialogDescription>{editTenant ? `${editTenant.code} · ${editTenant.name}` : ""}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Name</Label>
+                <Input value={eName} onChange={(e) => setEName(e.target.value)} />
+              </div>
+              <div>
+                <Label className="text-xs">Code</Label>
+                <Input value={eCode} onChange={(e) => setECode(e.target.value)} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Mobile</Label>
+                <Input value={eMobile} onChange={(e) => setEMobile(e.target.value)} placeholder="optional" />
+              </div>
+              <div>
+                <Label className="text-xs">Family member</Label>
+                <Input value={eFamily} onChange={(e) => setEFamily(e.target.value)} placeholder="optional" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Status</Label>
+              <div className="flex gap-2">
+                <Button size="sm" variant={eStatus === "ACTIVE" ? "default" : "outline"} onClick={() => setEStatus("ACTIVE")}>Active</Button>
+                <Button size="sm" variant={eStatus === "GONE" ? "default" : "outline"} onClick={() => setEStatus("GONE")}>Gone</Button>
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground rounded-md bg-muted/50 p-3">
+              Changes here flow to the tenant directory, collect-rent picker, client ledger, and all reports — they all read from the same tenant record.
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button onClick={submitEdit} disabled={eBusy}>
+              {eBusy ? "Saving…" : "Save Changes"}
             </Button>
           </DialogFooter>
         </DialogContent>

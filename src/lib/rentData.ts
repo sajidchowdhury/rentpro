@@ -217,6 +217,7 @@ interface RentProStore {
   nextCollectionId: number;
   nextTxnId: number;
   nextExpenseRecId: number;
+  nextTenantId: number;
   nextSettlementId: number;
   settlements: SettlementRecord[];
   nextPropertyId: number;
@@ -242,6 +243,7 @@ function getStore(): RentProStore {
       nextCollectionId: 1_000_000,
       nextTxnId: 1_000_000,
       nextExpenseRecId: 1_000_000,
+      nextTenantId: 1_000_000,
       nextSettlementId: 1_000_000,
       settlements: [],
       nextPropertyId: 1_000_000,
@@ -272,6 +274,7 @@ function getStore(): RentProStore {
   if (s.nextCollectionId === undefined) s.nextCollectionId = 1_000_000;
   if (s.nextTxnId === undefined) s.nextTxnId = 1_000_000;
   if (s.nextExpenseRecId === undefined) s.nextExpenseRecId = 1_000_000;
+  if (s.nextTenantId === undefined) s.nextTenantId = 1_000_000;
   if (s.organizations === undefined) s.organizations = null;
   if (s.activeOrgId === undefined) s.activeOrgId = null;
   if (s.nextOrgId === undefined) s.nextOrgId = 2;
@@ -1382,6 +1385,7 @@ export function exportState(): unknown {
       nextCollectionId: S.nextCollectionId,
       nextTxnId: S.nextTxnId,
       nextExpenseRecId: S.nextExpenseRecId,
+      nextTenantId: S.nextTenantId,
       nextSettlementId: S.nextSettlementId,
       nextPropertyId: S.nextPropertyId,
       nextUnitId: S.nextUnitId,
@@ -1442,6 +1446,7 @@ export function importState(data: any): { ok: boolean; error?: string } {
       S.nextCollectionId = st.nextCollectionId ?? 1_000_000;
       S.nextTxnId = st.nextTxnId ?? 1_000_000;
       S.nextExpenseRecId = st.nextExpenseRecId ?? 1_000_000;
+      S.nextTenantId = st.nextTenantId ?? 1_000_000;
       S.nextSettlementId = st.nextSettlementId ?? 1_000_000;
       S.nextPropertyId = st.nextPropertyId ?? 1_000_000;
       S.nextUnitId = st.nextUnitId ?? 1_000_000;
@@ -1490,188 +1495,6 @@ export function importState(data: any): { ok: boolean; error?: string } {
   }
 }
 
-// --- data migration (user-specified rules) ----------------------------------
-// Applies the migration rules the user specified:
-// 1. Keep only "Rent" org, remove others
-// 2. Default tenants: lease start Feb 2023, collections Mar 2023 - Oct 2026
-// 3. Special tenants: 0036, 0038, 0040, 0042 with custom dates + 0 due
-// 4. 0013: rent change 5K → 3K effective Nov 2024, 0 due
-// 5. 0016: lease end Dec 2025, 120K due with Bangla note
-export function runDataMigration(): { ok: boolean; summary: string } {
-  const ds = loadDataset();
-  const changes: string[] = [];
-
-  // helper: find tenant ID by code
-  const findTid = (code: string) => ds.tenants.find((t) => t.code === code)?.id;
-
-  // helper: set lease agreementStart
-  const setLeaseStart = (tenantId: number, date: string) => {
-    for (const l of ds.leases) {
-      if (l.tenantId === tenantId) {
-        l.agreementStart = new Date(date + "T00:00:00");
-      }
-    }
-  };
-  // helper: set lease agreementEnd + status
-  const setLeaseEnd = (tenantId: number, date: string | null, status: "ACTIVE" | "CLOSED") => {
-    for (const l of ds.leases) {
-      if (l.tenantId === tenantId) {
-        l.agreementEnd = date ? new Date(date + "T00:00:00") : null;
-        l.status = status;
-      }
-    }
-  };
-  // helper: delete collections outside a date range (by receiveDate)
-  const filterCollectionsByDate = (tenantId: number, fromDate: string, toDate: string) => {
-    const from = new Date(fromDate + "T00:00:00");
-    const to = new Date(toDate + "T23:59:59");
-    const before = ds.collections.filter((c) => c.tenantId === tenantId).length;
-    ds.collections = ds.collections.filter((c) => {
-      if (c.tenantId !== tenantId) return true;
-      if (c.receiveDate === null) return true; // keep null-date collections
-      return c.receiveDate >= from && c.receiveDate <= to;
-    });
-    const after = ds.collections.filter((c) => c.tenantId === tenantId).length;
-    return before - after;
-  };
-  // helper: waive all unpaid months for a tenant (ensures 0 due)
-  const waiveAllUnpaid = (tenantId: number, asOfMonth: string, asOfYear: string) => {
-    const leases = ds.leases.filter((l) => l.tenantId === tenantId);
-    const asOfKey = keyFromYM(asOfYear, asOfMonth);
-    let count = 0;
-    for (const l of leases) {
-      const startK = dateKey(l.agreementStart);
-      if (startK === null) continue;
-      const endK = l.agreementEnd ? dateKey(l.agreementEnd) ?? asOfKey : asOfKey;
-      for (let k = startK; k <= Math.min(endK, asOfKey); k++) {
-        const m = MONTHS[k % 12];
-        const y = String(Math.floor(k / 12));
-        const hasDone = ds.collections.some(
-          (c) => c.leaseId === l.id && c.rentMonth === m && c.rentYear === y && c.status === "DONE"
-        );
-        if (!hasDone && !isLeaseMonthWaived(l.id, m, y)) {
-          waiveLeaseMonth(l.id, m, y);
-          count++;
-        }
-      }
-    }
-    return count;
-  };
-
-  // --- 1. Keep only "Rent" org ---
-  // The owner org (org_1 / "RENT") stays. Others are demo/test orgs.
-  changes.push("Kept 'Rent' org (org_1). Removed other demo orgs.");
-
-  // --- 2. Default tenants (all except 0036,0038,0040,0041,0042,0013,0016) ---
-  const specialCodes = ["0013","0016","0036","0038","0040","0041","0042"];
-  const defaultTenants = ds.tenants.filter((t) => !specialCodes.includes(t.code));
-  let defaultCount = 0;
-  for (const t of defaultTenants) {
-    setLeaseStart(t.id, "2023-02-01");
-    const removed = filterCollectionsByDate(t.id, "2023-03-01", "2026-10-31");
-    if (removed > 0) defaultCount += removed;
-  }
-  changes.push(`Default tenants (${defaultTenants.length}): set lease start Feb 2023, filtered collections to Mar 2023 - Oct 2026 (${defaultCount} out-of-range collections removed).`);
-
-  // --- 3. Special tenants ---
-
-  // 0036 (id 38): rent start Aug 1 2023, end Nov 19 2024, GONE, 0 due
-  const t36 = findTid("0036");
-  if (t36) {
-    setLeaseStart(t36, "2023-08-01");
-    setLeaseEnd(t36, "2024-11-19", "CLOSED");
-    const tenant = ds.tenants.find((t) => t.id === t36);
-    if (tenant) tenant.status = "GONE";
-    filterCollectionsByDate(t36, "2023-08-01", "2024-11-19");
-    const waived = waiveAllUnpaid(t36, "November", "2024");
-    changes.push(`0036: lease Aug 2023 - Nov 2024, GONE, 0 due (waived ${waived} unpaid months).`);
-  }
-
-  // 0040 (id 42): remove completely
-  const t40 = findTid("0040");
-  if (t40) {
-    ds.collections = ds.collections.filter((c) => c.tenantId !== t40);
-    ds.txns = ds.txns.filter((t) => t.accountHeadId !== null && false); // txns don't carry tenantId directly
-    ds.leases = ds.leases.filter((l) => l.tenantId !== t40);
-    ds.tenants = ds.tenants.filter((t) => t.id !== t40);
-    changes.push("0040: removed completely (tenant + leases + collections).");
-  }
-
-  // 0038 (id 40): remove existing data, re-setup: rent Oct 1 2024 - Oct 1 2026, 0 due
-  const t38 = findTid("0040"); // 0038 has id 40 (found earlier)
-  // Wait — 0038's ID is 40, but we just removed tenant 0040 (id 42). Let me re-check.
-  // From the check: code=0038 id=40, code=0040 id=42. So t38 = id 40.
-  const t38id = ds.tenants.find((t) => t.code === "0038")?.id;
-  if (t38id) {
-    // delete old collections
-    ds.collections = ds.collections.filter((c) => c.tenantId !== t38id);
-    // set lease dates
-    setLeaseStart(t38id, "2024-10-01");
-    setLeaseEnd(t38id, "2026-10-01", "ACTIVE");
-    // waive all unpaid (0 due)
-    const waived = waiveAllUnpaid(t38id, "October", "2026");
-    changes.push(`0038: lease Oct 2024 - Oct 2026, 0 due (waived ${waived} unpaid months).`);
-  }
-
-  // 0042 (id 44): rent start Oct 1 2025, end Oct 1 2026, 0 due
-  const t42 = findTid("0042");
-  if (t42) {
-    setLeaseStart(t42, "2025-10-01");
-    setLeaseEnd(t42, "2026-10-01", "ACTIVE");
-    filterCollectionsByDate(t42, "2025-10-01", "2026-10-31");
-    const waived = waiveAllUnpaid(t42, "October", "2026");
-    changes.push(`0042: lease Oct 2025 - Oct 2026, 0 due (waived ${waived} unpaid months).`);
-  }
-
-  // --- 4. 0013 (id 13): rent 5K → 3K effective Nov 2024, 0 due ---
-  const t13 = findTid("0013");
-  if (t13) {
-    setLeaseStart(t13, "2023-02-01");
-    filterCollectionsByDate(t13, "2023-03-01", "2026-10-31");
-    // record rent change: 5K before Nov 2024, 3K from Nov 2024
-    const lease = ds.leases.find((l) => l.tenantId === t13 && l.status === "ACTIVE");
-    if (lease) {
-      addRentChange(lease.id, "2024-11-01", 3000, lease.gasBill, lease.moylarBill, lease.serviceCharge, lease.otherBill, "Rent reduced from 5000 to 3000 — room made smaller");
-      // also set the original rent to 5000 (so getRentForMonth returns 5K for Feb 2023 - Oct 2024)
-      // The lease.rent was updated to 3000 by addRentChange. We need to ensure the
-      // "before Nov 2024" rent is 5000. Since getRentForMonth falls back to lease.rent
-      // when no change is applicable, and the change sets it to 3000... we need to
-      // add a FIRST change entry that sets rent=5000 effective Feb 2023.
-      S.leaseRentChanges.set(lease.id, [
-        { effectiveDate: "2023-02-01", rent: 5000, gasBill: lease.gasBill, moylarBill: lease.moylarBill, serviceCharge: lease.serviceCharge, otherBill: lease.otherBill, reason: "Original rent", recordedAt: new Date().toISOString() },
-        ...S.leaseRentChanges.get(lease.id) ?? [],
-      ]);
-    }
-    const waived = waiveAllUnpaid(t13, "October", "2026");
-    changes.push(`0013: lease Feb 2023, rent 5K→3K effective Nov 2024, 0 due (waived ${waived} unpaid months).`);
-  }
-
-  // --- 5. 0016 (id 16): lease end Dec 2025, 120K due, Bangla note ---
-  const t16 = findTid("0016");
-  if (t16) {
-    setLeaseStart(t16, "2023-02-01");
-    setLeaseEnd(t16, "2025-12-01", "CLOSED");
-    filterCollectionsByDate(t16, "2023-03-01", "2025-12-31");
-    // store the Bangla note on the tenant's familyMember field
-    const tenant = ds.tenants.find((t) => t.id === t16);
-    if (tenant) {
-      tenant.familyMember = "⚠️ বকেয়া ১২০,০০০৳ — সেজো কাকা আমাকে বলেছিল এই বকেয়া টাকাটি অগ্রিম থেকে কেটে নিতে, কিন্তু আমি (সাজিদ) অগ্রিম টাকাটি পাইনি, সেজো কাকা পেয়েছিল এবং জিজ্ঞাসা করলে তিনি বললেন পূর্ববর্তী ভাড়াটিয়া চলে যাওয়ার সময় তিনি তাদের টাকাটি দিয়ে দিয়েছেন।";
-    }
-    changes.push("0016: lease Feb 2023 - Dec 2025, ৳120,000 due, Bangla note attached.");
-  }
-
-  // --- 0041: listed as exception but no specific rules — apply default ---
-  const t41 = findTid("0041");
-  if (t41) {
-    setLeaseStart(t41, "2023-02-01");
-    filterCollectionsByDate(t41, "2023-03-01", "2026-10-31");
-    changes.push("0041: no special rules specified — applied default (Feb 2023, Mar 2023 - Oct 2026).");
-  }
-
-  changes.push("\n⚠️ Make sure to download a backup after migration to persist these changes.");
-
-  return { ok: true, summary: changes.join("\n") };
-}
 // ----------------------------------------------------------------------------
 // getTenantList:  all tenants with leases + their outstanding summary.
 // getTenantLedger: one tenant's due months (oldest first), advance, recent.
@@ -1825,6 +1648,83 @@ export function getTenants(
   }
 
   return out.sort((a, b) => a.name.localeCompare(b.name, "bn"));
+}
+
+// --- tenant edit / delete --------------------------------------------------
+// Edit lets the manager correct a tenant's name / code / mobile / family member
+// / status. Delete removes the tenant entirely — but ONLY if they have no
+// transactions anywhere in the system (no collections, no leases, no advance
+// adjustments, no rent-change history, no waived months). This protects the
+// ledger: deleting a tenant with history would corrupt every report.
+
+export interface UpdateTenantPayload {
+  id: number;
+  name?: string;
+  code?: string;
+  mobile?: string | null;
+  familyMember?: string | null;
+  status?: "ACTIVE" | "GONE";
+}
+export function updateTenant(opts: UpdateTenantPayload): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const t = ds.tenants.find((x) => x.id === opts.id);
+  if (!t) return { ok: false, error: "Tenant not found" };
+  if (opts.name !== undefined) {
+    const n = String(opts.name).trim();
+    if (!n) return { ok: false, error: "Name is required" };
+    t.name = n;
+  }
+  if (opts.code !== undefined) {
+    const c = String(opts.code).trim();
+    if (!c) return { ok: false, error: "Code is required" };
+    t.code = c;
+  }
+  if (opts.mobile !== undefined) t.mobile = opts.mobile ? String(opts.mobile) : null;
+  if (opts.familyMember !== undefined) t.familyMember = opts.familyMember ? String(opts.familyMember) : null;
+  if (opts.status !== undefined) t.status = opts.status;
+  return { ok: true };
+}
+
+/** Returns true if the tenant has ANY transactional history in the system:
+ *  collections, leases, advance adjustments, rent-change history, or waived
+ *  months. Such a tenant cannot be deleted (would corrupt the ledger). */
+export function tenantHasTransactions(tenantId: number): boolean {
+  const ds = loadDataset();
+  if (ds.collections.some((c) => c.tenantId === tenantId)) return true;
+  if (ds.leases.some((l) => l.tenantId === tenantId)) return true;
+  if (S.tenantAdjustments.has(tenantId)) return true;
+  // check rent-change history + waived months via the tenant's leases
+  const leaseIds = new Set(ds.leases.filter((l) => l.tenantId === tenantId).map((l) => l.id));
+  if (leaseIds.size > 0) {
+    for (const lid of leaseIds) {
+      if (S.leaseRentChanges.has(lid)) return true;
+    }
+  }
+  // waived months are keyed by leaseId|month|year
+  if (S.waivedMonths.size > 0 && leaseIds.size > 0) {
+    for (const key of S.waivedMonths) {
+      // key format: `${leaseId}|${month}|${year}`
+      const lid = Number(key.split("|")[0]);
+      if (leaseIds.has(lid)) return true;
+    }
+  }
+  return false;
+}
+
+export function deleteTenant(id: number): { ok: boolean; error?: string } {
+  const ds = loadDataset();
+  const t = ds.tenants.find((x) => x.id === id);
+  if (!t) return { ok: false, error: "Tenant not found" };
+  if (tenantHasTransactions(id)) {
+    return {
+      ok: false,
+      error:
+        "Cannot delete — this tenant has transactions (collections, leases, or adjustments). Remove those first.",
+    };
+  }
+  const idx = ds.tenants.findIndex((x) => x.id === id);
+  ds.tenants.splice(idx, 1);
+  return { ok: true };
 }
 
 export interface DueRow {
@@ -3773,6 +3673,27 @@ export function updateOrganization(id: string, p: UpdateOrgPayload): { ok: boole
       o.trialEndsAt = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
     }
     if (p.plan !== "TRIAL") o.trialEndsAt = null;
+  }
+  return { ok: true };
+}
+
+/** Delete an organization. The owner org (org_1, owns the loaded dump data)
+ *  cannot be deleted — that would orphan the entire dataset. A client org that
+ *  is currently active can be deleted; the active org falls back to the owner
+ *  org afterwards. Client orgs hold no data in the prototype (isolated), so
+ *  deletion is safe. */
+export function deleteOrganization(id: string): { ok: boolean; error?: string } {
+  ensureOrganizations();
+  if (id === OWNER_ORG_ID) {
+    return { ok: false, error: "The owner organization cannot be deleted (it owns the loaded data)." };
+  }
+  const orgs = S.organizations!;
+  const idx = orgs.findIndex((o) => o.id === id);
+  if (idx === -1) return { ok: false, error: "Organization not found" };
+  orgs.splice(idx, 1);
+  // if the deleted org was active, fall back to the owner org
+  if (S.activeOrgId === id) {
+    S.activeOrgId = OWNER_ORG_ID;
   }
   return { ok: true };
 }
