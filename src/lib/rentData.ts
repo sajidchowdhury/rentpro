@@ -61,6 +61,16 @@ export interface Lease {
   tenantName: string;
   unitName: string;
   propertyName: string;
+  // The rent/bills that were in effect BEFORE the first recorded rent change.
+  // Captured once (on the first addRentChange call) so getRentForMonth can
+  // return the correct historical rent for months before any change took
+  // effect. Without this, months before the first change would wrongly show
+  // the NEW rent (because addRentChange overwrites lease.rent).
+  originalRent?: number;
+  originalGasBill?: number;
+  originalMoylarBill?: number;
+  originalServiceCharge?: number;
+  originalOtherBill?: number;
 }
 export interface Collection {
   id: number;
@@ -1075,8 +1085,13 @@ export function getGeneratePreview(
       const paidCols = leaseCols.filter((c) => c.status === "DONE");
       const pendingCols = leaseCols.filter((c) => c.status === "PENDING");
       const collectedSum = paidCols.reduce((s, c) => s + c.rent, 0);
+      // Use the rent/bills that were in effect for THIS target month (from the
+      // rent-change history), not the lease's current rent — so generating a
+      // past month shows that month's rent, and generating the current month
+      // shows the latest rent.
+      const ri = getRentForMonth(l, month, year);
       let status: GeneratePreviewRow["status"] = "DUE";
-      if (paidCols.length > 0 && collectedSum >= l.rent) status = "PAID";
+      if (paidCols.length > 0 && collectedSum >= ri.rent) status = "PAID";
       else if (paidCols.length > 0) status = "PARTIAL";
       else if (pendingCols.length > 0) status = "INVOICED";
       return {
@@ -1086,11 +1101,11 @@ export function getGeneratePreview(
         unitName: l.unitName,
         propertyName: l.propertyName,
         mobile: tenantMobile(l.tenantId, ds),
-        rent: l.rent,
-        gasBill: l.gasBill,
-        serviceCharge: l.serviceCharge,
-        otherBill: l.otherBill,
-        total: l.rent + l.gasBill + l.serviceCharge + l.otherBill,
+        rent: ri.rent,
+        gasBill: ri.gasBill,
+        serviceCharge: ri.serviceCharge,
+        otherBill: ri.otherBill,
+        total: ri.rent + ri.gasBill + ri.serviceCharge + ri.otherBill,
         status,
       } as GeneratePreviewRow;
     })
@@ -1133,16 +1148,19 @@ export function generateRentForLease(
     (c) => c.leaseId === leaseId && c.rentMonth === month && c.rentYear === year
   );
   if (exists) return { created: false, alreadyExists: true };
-  // create a PENDING collection (the invoice) with the lease's rent + bills
+  // create a PENDING collection (the invoice) with the rent + bills that were
+  // in effect for THIS target month (from the rent-change history), so a rent
+  // change recorded for a future month doesn't overwrite the historical amount.
+  const ri = getRentForMonth(lease, month, year);
   ds.collections.push({
     id: S.nextCollectionId++,
     leaseId,
     tenantId: lease.tenantId,
-    rent: lease.rent,
-    gasBill: lease.gasBill,
-    moylarBill: lease.moylarBill,
-    serviceCharge: lease.serviceCharge,
-    otherBill: lease.otherBill,
+    rent: ri.rent,
+    gasBill: ri.gasBill,
+    moylarBill: ri.moylarBill,
+    serviceCharge: ri.serviceCharge,
+    otherBill: ri.otherBill,
     rentMonth: month,
     rentYear: year,
     receiveDate: null,
@@ -1268,7 +1286,20 @@ export function addRentChange(
   const ds = loadDataset();
   const lease = ds.leases.find((l) => l.id === leaseId);
   if (!lease) return { ok: false, error: "Lease not found" };
-  const changes = S.leaseRentChanges.get(leaseId) ?? [];
+  const existing = S.leaseRentChanges.get(leaseId) ?? [];
+  // On the FIRST rent-change ever recorded for this lease, snapshot the rent
+  // that was in effect BEFORE this change. This is the "original" rent, used
+  // by getRentForMonth for months before the first change took effect.
+  // (Without this, those months would wrongly show the NEW rent, because we
+  // overwrite lease.rent below.)
+  if (existing.length === 0) {
+    lease.originalRent = lease.rent;
+    lease.originalGasBill = lease.gasBill;
+    lease.originalMoylarBill = lease.moylarBill;
+    lease.originalServiceCharge = lease.serviceCharge;
+    lease.originalOtherBill = lease.otherBill;
+  }
+  const changes = existing;
   changes.push({
     effectiveDate,
     rent: Number(rent) || 0,
@@ -1319,12 +1350,54 @@ export function getRentForMonth(
   if (applicable) {
     return { rent: applicable.rent, gasBill: applicable.gasBill, moylarBill: applicable.moylarBill, serviceCharge: applicable.serviceCharge, otherBill: applicable.otherBill };
   }
-  // no change before this month — use the lease's original rent (the first
-  // change's values represent the NEW rent; before that, the lease.rent was
-  // the original. But since we update lease.rent on addRentChange, we can't
-  // recover the original. So if there are changes but none before this month,
-  // we use the lease's current rent as a fallback.)
+  // No change took effect on or before the target month — so the target month
+  // is BEFORE the first recorded change. Return the rent that was in effect
+  // before any change. The original is captured on the first addRentChange
+  // call; if that snapshot is missing (a rent change recorded with an older
+  // code version that didn't capture it), heal it lazily from the earliest
+  // collection recorded before the first change took effect — that collection's
+  // rent/bills ARE the pre-change rent.
+  if (lease.originalRent === undefined) {
+    healOriginalRent(lease, changes);
+  }
+  if (lease.originalRent !== undefined) {
+    return {
+      rent: lease.originalRent,
+      gasBill: lease.originalGasBill ?? 0,
+      moylarBill: lease.originalMoylarBill ?? 0,
+      serviceCharge: lease.originalServiceCharge ?? 0,
+      otherBill: lease.originalOtherBill ?? 0,
+    };
+  }
   return { rent: lease.rent, gasBill: lease.gasBill, moylarBill: lease.moylarBill, serviceCharge: lease.serviceCharge, otherBill: lease.otherBill };
+}
+
+/** Heals a missing `original*` snapshot on a lease that already has rent-change
+ *  history (recorded with an older code version that didn't capture it).
+ *  Infers the pre-change rent/bills from the earliest collection recorded
+ *  before the first change's effective month. No-op if the snapshot is already
+ *  present or there are no collections before the first change. */
+function healOriginalRent(lease: Lease, changes: RentChange[]): void {
+  if (lease.originalRent !== undefined) return;
+  if (changes.length === 0) return;
+  const ds = loadDataset();
+  const firstChangeKey = keyFromYM(
+    changes[0].effectiveDate.slice(0, 4),
+    MONTHS[Number(changes[0].effectiveDate.slice(5, 7)) - 1]
+  );
+  // earliest collection for this lease, recorded before the first change
+  const pre = ds.collections
+    .filter((c) => c.leaseId === lease.id)
+    .map((c) => ({ c, k: keyFromYM(c.rentYear, c.rentMonth) }))
+    .filter((x) => x.k < firstChangeKey)
+    .sort((a, b) => a.k - b.k);
+  if (pre.length === 0) return;
+  const earliest = pre[0].c;
+  lease.originalRent = earliest.rent;
+  lease.originalGasBill = earliest.gasBill;
+  lease.originalMoylarBill = earliest.moylarBill;
+  lease.originalServiceCharge = earliest.serviceCharge;
+  lease.originalOtherBill = earliest.otherBill;
 }
 
 // --- backup / restore -------------------------------------------------------
@@ -1812,10 +1885,10 @@ export function getTenantLedger(
           year: String(y),
           propertyName: l.propertyName,
           unitName: l.unitName,
-          rent: l.rent,
-          gasBill: l.gasBill,
-          serviceCharge: l.serviceCharge,
-          otherBill: l.otherBill,
+          rent: ri.rent,
+          gasBill: ri.gasBill,
+          serviceCharge: ri.serviceCharge,
+          otherBill: ri.otherBill,
           total,
           collected,
           remaining: total - collected,
