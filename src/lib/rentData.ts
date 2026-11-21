@@ -1051,6 +1051,10 @@ export interface GeneratePreviewRow {
   // PAID = collected enough; INVOICED = PENDING collection exists (invoice
   // created, not paid yet); DUE = no collection exists; PARTIAL = some paid
   status: "PAID" | "DUE" | "PARTIAL" | "INVOICED";
+  // True when a PENDING (unpaid) invoice exists for this lease+month but no
+  // DONE payment — lets the UI offer a "regenerate" path that replaces the
+  // stale pending invoice instead of being permanently blocked by it.
+  hasPendingInvoice?: boolean;
 }
 export interface GeneratePreview {
   month: string;
@@ -1107,6 +1111,7 @@ export function getGeneratePreview(
         otherBill: ri.otherBill,
         total: ri.rent + ri.gasBill + ri.serviceCharge + ri.otherBill,
         status,
+        hasPendingInvoice: pendingCols.length > 0 && paidCols.length === 0,
       } as GeneratePreviewRow;
     })
     .sort((a, b) => {
@@ -1142,12 +1147,23 @@ export function generateRentForLease(
   const ds = loadDataset();
   const lease = ds.leases.find((l) => l.id === leaseId);
   if (!lease) return { created: false, alreadyExists: false };
-  // idempotency: skip if ANY collection (DONE or PENDING) exists for this
-  // lease+month — the invoice was already created (or the rent was collected).
-  const exists = ds.collections.some(
+  // idempotency: skip if a DONE (paid) collection exists for this lease+month
+  // — the rent was already collected, don't create a duplicate invoice.
+  const existing = ds.collections.filter(
     (c) => c.leaseId === leaseId && c.rentMonth === month && c.rentYear === year
   );
-  if (exists) return { created: false, alreadyExists: true };
+  const hasDone = existing.some((c) => c.status === "DONE");
+  if (hasDone) return { created: false, alreadyExists: true };
+  // If a stale PENDING (unpaid) invoice exists, REPLACE it with a fresh one
+  // (the rent may have changed since it was created). This unblocks the
+  // "generate button is disabled" scenario where an orphan/old PENDING kept
+  // the user from re-generating.
+  if (existing.length > 0) {
+    for (const c of existing) {
+      const idx = ds.collections.findIndex((x) => x.id === c.id);
+      if (idx !== -1) ds.collections.splice(idx, 1);
+    }
+  }
   // create a PENDING collection (the invoice) with the rent + bills that were
   // in effect for THIS target month (from the rent-change history), so a rent
   // change recorded for a future month doesn't overwrite the historical amount.
