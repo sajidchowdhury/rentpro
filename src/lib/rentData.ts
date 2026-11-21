@@ -85,6 +85,11 @@ export interface Collection {
   rentYear: string;
   receiveDate: Date | null;
   status: "PENDING" | "DONE";
+  // The portion of this collection's total that was deducted from the
+  // tenant's advance deposit (not received in cash). Stored so the client
+  // ledger can show a separate "From advance" credit line and the advance
+  // balance can be computed per-collection. 0 when no advance was used.
+  advanceAdjusted?: number;
 }
 // How a payment physically moved — drives the cash vs bank split in the
 // Day Book report (mirrors legacy `account_transection.transection_by`).
@@ -2075,6 +2080,7 @@ export function collectRent(p: CollectPayload): {
     rentYear: p.year,
     receiveDate: receive,
     status: p.payLater ? "PENDING" : "DONE",
+    advanceAdjusted: 0, // set below after the adjustment is computed
   });
 
   // advance adjustment
@@ -2087,6 +2093,10 @@ export function collectRent(p: CollectPayload): {
         tenant.id,
         (S.tenantAdjustments.get(tenant.id) ?? 0) + advanceAdjusted
       );
+      // store the advance-adjusted portion on the collection so the ledger
+      // can show it as a separate "From advance" credit line
+      const coll = ds.collections.find((c) => c.id === id);
+      if (coll) coll.advanceAdjusted = advanceAdjusted;
     }
   }
 
@@ -3605,7 +3615,19 @@ export function getClientLedgerStatement(
     const cKey = keyFromYM(c.rentYear, c.rentMonth);
     if (cKey < fromKey || cKey > asOfKey) continue;
     const d = dateOnly(c.receiveDate) ?? `${c.rentYear}-${String(MONTHS.indexOf(c.rentMonth) + 1).padStart(2, "0")}-01`;
-    evs.push({ date: d, particulars: `Payment — ${c.rentMonth} ${c.rentYear} — ৳${c.rent}`, debit: 0, credit: c.rent, collectionId: c.id, leaseId: c.leaseId, rentMonth: c.rentMonth, rentYear: c.rentYear });
+    const total = c.rent + c.gasBill + c.moylarBill + c.serviceCharge + c.otherBill;
+    const adj = c.advanceAdjusted ?? 0;
+    if (adj > 0 && adj < total) {
+      // show the cash portion + the advance portion as separate credit lines
+      const cashPortion = total - adj;
+      if (cashPortion > 0) {
+        evs.push({ date: d, particulars: `Payment — ${c.rentMonth} ${c.rentYear} — ৳${cashPortion} (cash)`, debit: 0, credit: cashPortion, collectionId: c.id, leaseId: c.leaseId, rentMonth: c.rentMonth, rentYear: c.rentYear });
+      }
+      evs.push({ date: d, particulars: `From advance — ${c.rentMonth} ${c.rentYear} — ৳${adj}`, debit: 0, credit: adj, collectionId: c.id, leaseId: c.leaseId, rentMonth: c.rentMonth, rentYear: c.rentYear });
+    } else {
+      // no advance adjustment (or full advance) — show a single payment line
+      evs.push({ date: d, particulars: `Payment — ${c.rentMonth} ${c.rentYear} — ৳${total}`, debit: 0, credit: total, collectionId: c.id, leaseId: c.leaseId, rentMonth: c.rentMonth, rentYear: c.rentYear });
+    }
   }
 
   // Sort ASCENDING by rent month (so all January entries come before
