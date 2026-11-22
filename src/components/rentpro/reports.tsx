@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw, Check, ChevronsUpDown, Search, Pencil, Receipt,
+  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw, Check, ChevronsUpDown, Search, Pencil, Receipt, TrendingUp,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -55,6 +55,21 @@ interface TenantOpt { id: number; name: string; code: string; }
 interface AccountHeadOpt { id: number; name: string; type: string; recurring: boolean; }
 interface ExpLedgerRow { id: number; headId: number; headName: string; date: string; month: string; year: string; amount: number; note: string; method: "CASH" | "BANK" | "MOBILE_BANK"; isBackfill: boolean; }
 interface ExpLedger { rows: ExpLedgerRow[]; totalAmount: number; count: number; byHead: Array<{ headId: number; headName: string; count: number; amount: number }>; }
+interface IncLedgerRow { id: number; headId: number; headName: string; date: string; amount: number; note: string; method: "CASH" | "BANK" | "MOBILE_BANK"; }
+interface IncLedger { rows: IncLedgerRow[]; totalAmount: number; count: number; byHead: Array<{ headId: number; headName: string; count: number; amount: number }>; }
+interface RentSummaryRow {
+  tenantId: number; tenantCode: string; tenantName: string; propertyName: string; unitName: string;
+  monthlyRent: number; monthsDue: number; monthsPaid: number;
+  totalRent: number; totalPaid: number; totalDue: number;
+  advanceDeposit: number; advanceUsed: number; advanceBalance: number;
+  leaseStatus: string;
+}
+interface RentSummary {
+  asOfMonth: string; asOfYear: string;
+  rows: RentSummaryRow[];
+  totalMonthlyRent: number; totalRent: number; totalPaid: number; totalDue: number; totalAdvanceBalance: number;
+  totalRentCollection: number; totalOtherIncome: number; totalExpense: number; cashInHand: number; closingBank: number;
+}
 
 function printHTML(title: string, bodyInner: string) {
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
@@ -121,6 +136,23 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
   const [expTo, setExpTo] = useState("");
   const [expLedger, setExpLedger] = useState<ExpLedger | null>(null);
   const [expLoading, setExpLoading] = useState(false);
+
+  // income ledger (every income record — multi-select account heads + date range)
+  const [incSelHeadIds, setIncSelHeadIds] = useState<Set<number>>(new Set());
+  const [incFrom, setIncFrom] = useState("");
+  const [incTo, setIncTo] = useState("");
+  const [incLedger, setIncLedger] = useState<IncLedger | null>(null);
+  const [incLoading, setIncLoading] = useState(false);
+
+  // rent summary (per-tenant rent due vs paid + cash-in-hand overview)
+  const [rentSummary, setRentSummary] = useState<RentSummary | null>(null);
+  const [rsLoading, setRsLoading] = useState(false);
+  // tenant drill-down: clicking a tenant row opens their collection history
+  const [drillDownTenant, setDrillDownTenant] = useState<RentSummaryRow | null>(null);
+  const [tenantLedger, setTenantLedger] = useState<ClientLedger | null>(null);
+  const [tenantLedgerLoading, setTenantLedgerLoading] = useState(false);
+  // cash-in-hand drill-down: 'rent-collection' | 'cash-hand'
+  const [drillDownType, setDrillDownType] = useState<string | null>(null);
 
   // defaults: this month range for day book
   useEffect(() => {
@@ -236,6 +268,29 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
     finally { setExpLoading(false); }
   }, [expSelHeadIds, expFrom, expTo]);
 
+  const fetchIncLedger = useCallback(async () => {
+    setIncLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (incSelHeadIds.size > 0) params.set("headIds", [...incSelHeadIds].join(","));
+      if (incFrom) params.set("from", incFrom);
+      if (incTo) params.set("to", incTo);
+      const r = await fetch(`/api/report/income-ledger?${params}`);
+      setIncLedger(await r.json());
+    } catch { toast.error("Failed to load income ledger"); }
+    finally { setIncLoading(false); }
+  }, [incSelHeadIds, incFrom, incTo]);
+
+  const fetchRentSummary = useCallback(async () => {
+    if (!month || !year) return;
+    setRsLoading(true);
+    try {
+      const r = await fetch(`/api/report/rent-summary?month=${encodeURIComponent(month)}&year=${encodeURIComponent(year)}`);
+      setRentSummary(await r.json());
+    } catch { toast.error("Failed to load rent summary"); }
+    finally { setRsLoading(false); }
+  }, [month, year]);
+
   // auto-fetch when the active tab's params are ready
   useEffect(() => { if (tab === "daybook" && dbFrom && dbTo && !daybook) fetchDaybook(); }, [tab, dbFrom, dbTo, daybook, fetchDaybook]);
   useEffect(() => { if (tab === "yearly" && yrYear && !yearly) fetchYearly(); }, [tab, yrYear, yearly, fetchYearly]);
@@ -243,6 +298,21 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
   useEffect(() => { if (tab === "ledger" && ledgerId !== null && !ledger) fetchLedger(); }, [tab, ledgerId, ledger, fetchLedger]);
   useEffect(() => { if (tab === "due" && !due) fetchDue(); }, [tab, due, fetchDue]);
   useEffect(() => { if (tab === "expense-ledger" && !expLedger) fetchExpLedger(); }, [tab, expLedger, fetchExpLedger]);
+  useEffect(() => { if (tab === "income-ledger" && !incLedger) fetchIncLedger(); }, [tab, incLedger, fetchIncLedger]);
+  useEffect(() => { if (tab === "rent-summary" && !rentSummary) fetchRentSummary(); }, [tab, rentSummary, fetchRentSummary]);
+
+  // when a tenant row is clicked in the rent summary, fetch their ledger for the drill-down dialog
+  useEffect(() => {
+    if (!drillDownTenant) { setTenantLedger(null); return; }
+    setTenantLedgerLoading(true);
+    setTenantLedger(null);
+    const params = new URLSearchParams({ tenantId: String(drillDownTenant.tenantId), month, year });
+    fetch(`/api/report/client-ledger?${params}`)
+      .then((r) => r.json())
+      .then((d) => setTenantLedger(d))
+      .catch(() => toast.error("Failed to load tenant ledger"))
+      .finally(() => setTenantLedgerLoading(false));
+  }, [drillDownTenant, month, year]);
 
   return (
     <div className="space-y-6">
@@ -251,7 +321,7 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
           <BarChart3 className="size-6 text-blue-600" />
           Reports
         </h1>
-        <p className="text-sm text-muted-foreground">Day book, client ledger, yearly, account-head-wise, client-due &amp; expense ledger — all printable.</p>
+        <p className="text-sm text-muted-foreground">Day book, client ledger, yearly, account-head-wise, client-due, expense ledger, income ledger &amp; rent summary — all printable.</p>
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
@@ -262,6 +332,8 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
           <TabsTrigger value="ledger" className="gap-1"><User className="size-3.5" /> Client Ledger</TabsTrigger>
           <TabsTrigger value="due" className="gap-1"><Wallet className="size-3.5" /> Client Due</TabsTrigger>
           <TabsTrigger value="expense-ledger" className="gap-1"><Receipt className="size-3.5" /> Expense Ledger</TabsTrigger>
+          <TabsTrigger value="income-ledger" className="gap-1"><TrendingUp className="size-3.5" /> Income Ledger</TabsTrigger>
+          <TabsTrigger value="rent-summary" className="gap-1"><BarChart3 className="size-3.5" /> Rent Summary</TabsTrigger>
         </TabsList>
 
         {/* DAY BOOK */}
@@ -394,7 +466,7 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
                     <Select value={ledgerFromYear} onValueChange={(v) => { setLedgerFromYear(v); setLedger(null); }}>
                       <SelectTrigger><SelectValue placeholder="Year" /></SelectTrigger>
                       <SelectContent>
-                        {["2023","2024","2025","2026","2027"].map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
+                        {["2022","2023","2024","2025","2026","2027"].map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -491,6 +563,215 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
               {expLoading || !expLedger ? <Skeleton className="h-80 rounded" /> : <ExpenseLedgerTable data={expLedger} heads={expHeads} onChanged={fetchExpLedger} />}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* INCOME LEDGER */}
+        <TabsContent value="income-ledger">
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">Income Ledger (আয়ের খতিয়ান)</CardTitle>
+                  <CardDescription>Every income record — filter by account head(s) + date range. Totals match the day book &amp; dashboard.</CardDescription>
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="w-[260px]">
+                    <Label className="text-xs">Account heads</Label>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
+                          {incSelHeadIds.size === 0 ? "All account heads" : `${incSelHeadIds.size} head${incSelHeadIds.size > 1 ? "s" : ""} selected`}
+                          <ChevronsUpDown className="size-4 opacity-50 shrink-0" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[300px] p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search account head…" />
+                          <CommandList>
+                            <CommandEmpty>No account head found.</CommandEmpty>
+                            <CommandGroup>
+                              {expHeads.map((h) => (
+                                <CommandItem
+                                  key={h.id}
+                                  value={h.name}
+                                  onSelect={() => {
+                                    setIncSelHeadIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(h.id)) next.delete(h.id); else next.add(h.id);
+                                      return next;
+                                    });
+                                    setIncLedger(null);
+                                  }}
+                                  className="flex items-center gap-2"
+                                >
+                                  <Check className={`size-4 ${incSelHeadIds.has(h.id) ? "opacity-100" : "opacity-0"}`} />
+                                  <span className="truncate">{h.name}</span>
+                                  {h.recurring && <Badge variant="secondary" className="text-[9px] ml-auto">recurring</Badge>}
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div><Label className="text-xs">From</Label><Input type="date" value={incFrom} onChange={(e) => { setIncFrom(e.target.value); setIncLedger(null); }} className="h-9 w-[150px]" /></div>
+                  <div><Label className="text-xs">To</Label><Input type="date" value={incTo} onChange={(e) => { setIncTo(e.target.value); setIncLedger(null); }} className="h-9 w-[150px]" /></div>
+                  <Button size="sm" variant="outline" onClick={fetchIncLedger}><RefreshCw className="size-3.5" /> Run</Button>
+                  <Button size="sm" onClick={() => incLedger && printHTML("Income Ledger", incomeLedgerHTML(incLedger))} disabled={!incLedger}><Printer className="size-3.5" /> Print</Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {incLoading || !incLedger ? <Skeleton className="h-80 rounded" /> : <IncomeLedgerTable data={incLedger} />}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* RENT SUMMARY */}
+        <TabsContent value="rent-summary">
+          {/* Section A: Tenant summary table */}
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">Rent Summary (ভাড়ার সারাংশ) — {month} {year}</CardTitle>
+                  <CardDescription>Per-tenant rent due vs paid, advance balance &amp; cash-in-hand overview for the month</CardDescription>
+                </div>
+                <div className="flex items-end gap-2">
+                  <Button size="sm" variant="outline" onClick={fetchRentSummary}><RefreshCw className="size-3.5" /> Run</Button>
+                  <Button size="sm" onClick={() => rentSummary && printHTML(`Rent Summary — ${month} ${year}`, rentSummaryHTML(rentSummary))} disabled={!rentSummary}><Printer className="size-3.5" /> Print</Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {rsLoading || !rentSummary ? <Skeleton className="h-80 rounded" /> : <RentSummaryTable data={rentSummary} onRowClick={(r) => setDrillDownTenant(r)} />}
+            </CardContent>
+          </Card>
+
+          {/* Section B: Cash in hand summary */}
+          {rentSummary && (
+            <Card className="mt-4">
+              <CardHeader>
+                <CardTitle className="text-base">Cash in Hand — {month} {year}</CardTitle>
+                <CardDescription>Rent collection, other income, expense &amp; closing cash/bank balance. Click any box for the breakdown.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+                  <StatBox label="Total Rent Collection" value={rentSummary.totalRentCollection} accent="emerald" onClick={() => setDrillDownType("rent-collection")} />
+                  <StatBox label="Total Other Income" value={rentSummary.totalOtherIncome} accent="emerald" onClick={() => { toast.info("See the Income Ledger tab for the full breakdown"); setTab("income-ledger"); }} />
+                  <StatBox label="Total Expense" value={rentSummary.totalExpense} accent="rose" onClick={() => { toast.info("See the Expense Ledger tab for the full breakdown"); setTab("expense-ledger"); }} />
+                  <StatBox label="Cash in Bank" value={rentSummary.closingBank} accent="sky" onClick={() => { toast.info("See the Day Book tab for the bank balance"); setTab("daybook"); }} />
+                  <StatBox label="Cash in Hand" value={rentSummary.cashInHand} accent="primary" big onClick={() => setDrillDownType("cash-hand")} />
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Tenant drill-down: collection history */}
+          <Dialog open={!!drillDownTenant} onOpenChange={(o) => { if (!o) { setDrillDownTenant(null); setTenantLedger(null); } }}>
+            <DialogContent className="sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2"><User className="size-4" /> {drillDownTenant ? `${drillDownTenant.tenantName} (${drillDownTenant.tenantCode})` : ""}</DialogTitle>
+                <DialogDescription>
+                  {drillDownTenant ? `${drillDownTenant.propertyName} · ${drillDownTenant.unitName} — collection history up to ${month} ${year}` : ""}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="max-h-[60vh] overflow-y-auto">
+                {tenantLedgerLoading || !tenantLedger ? (
+                  <Skeleton className="h-40 rounded" />
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Date</TableHead>
+                        <TableHead>Particulars</TableHead>
+                        <TableHead className="text-right">Debit</TableHead>
+                        <TableHead className="text-right">Credit</TableHead>
+                        <TableHead className="text-right">Balance</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {tenantLedger.entries.length === 0 ? (
+                        <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-6">No entries.</TableCell></TableRow>
+                      ) : tenantLedger.entries.map((e, i) => (
+                        <TableRow key={i}>
+                          <TableCell className="whitespace-nowrap">{shortDate(e.date)}</TableCell>
+                          <TableCell className="max-w-[20rem]">{e.particulars}</TableCell>
+                          <TableCell className="text-right text-rose-600 dark:text-rose-400">{e.debit ? money(e.debit) : "—"}</TableCell>
+                          <TableCell className="text-right text-emerald-600 dark:text-emerald-400">{e.credit ? money(e.credit) : "—"}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">{money(e.balance)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* Rent-collection drill-down: per-tenant totals */}
+          <Dialog open={drillDownType === "rent-collection"} onOpenChange={(o) => { if (!o) setDrillDownType(null); }}>
+            <DialogContent className="sm:max-w-3xl">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2"><Wallet className="size-4" /> Total Rent Collection — {month} {year}</DialogTitle>
+                <DialogDescription>Per-tenant rent collected, outstanding &amp; advance used for the month</DialogDescription>
+              </DialogHeader>
+              <div className="max-h-[60vh] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Code</TableHead>
+                      <TableHead>Tenant</TableHead>
+                      <TableHead className="text-right">Total Paid</TableHead>
+                      <TableHead className="text-right">Total Due</TableHead>
+                      <TableHead className="text-right">Advance Used</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rentSummary?.rows.map((r) => (
+                      <TableRow key={r.tenantId}>
+                        <TableCell className="font-mono text-xs">{r.tenantCode}</TableCell>
+                        <TableCell className="font-medium">{r.tenantName}</TableCell>
+                        <TableCell className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums">{money(r.totalPaid)}</TableCell>
+                        <TableCell className="text-right text-rose-600 dark:text-rose-400 tabular-nums">{money(r.totalDue)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{money(r.advanceUsed)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                  <TableFooter>
+                    <TableRow>
+                      <TableCell colSpan={2}>Total — {rentSummary?.rows.length ?? 0} tenants</TableCell>
+                      <TableCell className="text-right font-bold">{money(rentSummary?.totalPaid ?? 0)}</TableCell>
+                      <TableCell className="text-right font-bold">{money(rentSummary?.totalDue ?? 0)}</TableCell>
+                      <TableCell></TableCell>
+                    </TableRow>
+                  </TableFooter>
+                </Table>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* Cash-in-hand breakdown drill-down */}
+          <Dialog open={drillDownType === "cash-hand"} onOpenChange={(o) => { if (!o) setDrillDownType(null); }}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2"><Wallet className="size-4" /> Cash in Hand — Formula</DialogTitle>
+                <DialogDescription>How the closing cash-in-hand is computed</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between"><span>Rent Collection</span><span className="text-emerald-600 dark:text-emerald-400 tabular-nums">+ {money(rentSummary?.totalRentCollection ?? 0)}</span></div>
+                <div className="flex justify-between"><span>Other Income</span><span className="text-emerald-600 dark:text-emerald-400 tabular-nums">+ {money(rentSummary?.totalOtherIncome ?? 0)}</span></div>
+                <div className="flex justify-between"><span>Total Expense</span><span className="text-rose-600 dark:text-rose-400 tabular-nums">− {money(rentSummary?.totalExpense ?? 0)}</span></div>
+                <div className="flex justify-between"><span>Cash in Bank</span><span className="text-sky-700 dark:text-sky-300 tabular-nums">− {money(rentSummary?.closingBank ?? 0)}</span></div>
+                <Separator />
+                <div className="flex justify-between font-bold text-base"><span>Cash in Hand</span><span className="tabular-nums">{money(rentSummary?.cashInHand ?? 0)}</span></div>
+                <div className="text-xs text-muted-foreground rounded-md bg-muted/50 p-3">
+                  Cash in Hand = (Rent Collection + Other Income) − Total Expense − Cash in Bank
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
         </TabsContent>
       </Tabs>
     </div>
@@ -1207,6 +1488,173 @@ function DueTable({ data }: { data: ClientDue }) {
   );
 }
 
+function IncomeLedgerTable({ data }: { data: IncLedger }) {
+  const paged = usePagination(data.rows, 25);
+  return (
+    <div className="space-y-3">
+      {/* summary + per-head breakdown */}
+      <div className="flex flex-wrap gap-4 text-sm rounded-md bg-muted/60 p-3">
+        <div><span className="text-muted-foreground">Records:</span> <span className="font-medium">{data.count}</span></div>
+        <div><span className="text-muted-foreground">Total income:</span> <span className="font-bold text-emerald-600 dark:text-emerald-400">{money(data.totalAmount)}</span></div>
+        <div><span className="text-muted-foreground">Heads:</span> {data.byHead.length}</div>
+      </div>
+      {data.byHead.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {data.byHead.map((h) => (
+            <Badge key={h.headId} variant="secondary" className="text-[11px] gap-1" title={`${h.count} record(s)`}>
+              {h.headName} · {money(h.amount)}
+            </Badge>
+          ))}
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <div className="max-h-[26rem] overflow-y-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Account Head</TableHead>
+                <TableHead className="text-right">Amount</TableHead>
+                <TableHead>Method</TableHead>
+                <TableHead>Note</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paged.pageItems.length === 0 ? (
+                <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">No income records match the current filters.</TableCell></TableRow>
+              ) : paged.pageItems.map((r, idx) => (
+                <TableRow key={r.id ?? `inc-row-${idx}`}>
+                  <TableCell className="whitespace-nowrap">{shortDate(r.date)}</TableCell>
+                  <TableCell className="font-medium">{r.headName}</TableCell>
+                  <TableCell className="text-right font-medium tabular-nums text-emerald-600 dark:text-emerald-400">{money(r.amount)}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{r.method === "BANK" ? "Bank" : r.method === "MOBILE_BANK" ? "Mobile" : "Cash"}</TableCell>
+                  <TableCell className="max-w-[16rem] truncate text-muted-foreground text-xs">{r.note || "—"}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+            {data.rows.length > 0 && (
+              <TableFooter>
+                <TableRow>
+                  <TableCell colSpan={2}>Total — {data.count} record(s)</TableCell>
+                  <TableCell className="text-right font-bold">{money(data.totalAmount)}</TableCell>
+                  <TableCell colSpan={2}></TableCell>
+                </TableRow>
+              </TableFooter>
+            )}
+          </Table>
+        </div>
+        <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
+      </div>
+    </div>
+  );
+}
+
+function RentSummaryTable({ data, onRowClick }: { data: RentSummary; onRowClick: (r: RentSummaryRow) => void }) {
+  const paged = usePagination(data.rows, 15);
+  return (
+    <div className="space-y-3">
+      <div className="overflow-x-auto">
+        <div className="max-h-[28rem] overflow-y-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Code</TableHead>
+                <TableHead>Tenant</TableHead>
+                <TableHead>Property / Unit</TableHead>
+                <TableHead className="text-right">Monthly Rent</TableHead>
+                <TableHead className="text-right">Months Due</TableHead>
+                <TableHead className="text-right">Months Paid</TableHead>
+                <TableHead className="text-right">Total Rent</TableHead>
+                <TableHead className="text-right">Total Paid</TableHead>
+                <TableHead className="text-right">Due</TableHead>
+                <TableHead className="text-right">Adv. Deposit</TableHead>
+                <TableHead className="text-right">Adv. Used</TableHead>
+                <TableHead className="text-right">Adv. Balance</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paged.pageItems.length === 0 ? (
+                <TableRow><TableCell colSpan={12} className="text-center text-muted-foreground py-8">No tenants for this month.</TableCell></TableRow>
+              ) : paged.pageItems.map((r) => (
+                <TableRow
+                  key={r.tenantId}
+                  className="cursor-pointer hover:bg-muted/50"
+                  onClick={() => onRowClick(r)}
+                >
+                  <TableCell className="font-mono text-xs">{r.tenantCode}</TableCell>
+                  <TableCell className="font-medium">{r.tenantName}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{r.propertyName} · {r.unitName}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(r.monthlyRent)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{r.monthsDue}</TableCell>
+                  <TableCell className="text-right tabular-nums">{r.monthsPaid}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(r.totalRent)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-emerald-600 dark:text-emerald-400">{money(r.totalPaid)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-rose-600 dark:text-rose-400">{money(r.totalDue)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(r.advanceDeposit)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-amber-700 dark:text-amber-400">{money(r.advanceUsed)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-emerald-600 dark:text-emerald-400">{money(r.advanceBalance)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+            <TableFooter>
+              <TableRow>
+                <TableCell colSpan={3}>Total — {data.rows.length} tenants</TableCell>
+                <TableCell className="text-right">{money(data.totalMonthlyRent)}</TableCell>
+                <TableCell></TableCell>
+                <TableCell></TableCell>
+                <TableCell className="text-right">{money(data.totalRent)}</TableCell>
+                <TableCell className="text-right">{money(data.totalPaid)}</TableCell>
+                <TableCell className="text-right">{money(data.totalDue)}</TableCell>
+                <TableCell></TableCell>
+                <TableCell></TableCell>
+                <TableCell className="text-right">{money(data.totalAdvanceBalance)}</TableCell>
+              </TableRow>
+            </TableFooter>
+          </Table>
+        </div>
+        <Pager page={paged.page} totalPages={paged.totalPages} total={paged.total} pageSize={paged.pageSize} onPrev={paged.prev} onNext={paged.next} />
+      </div>
+      <div className="text-xs text-muted-foreground">Tip: click any tenant row to view their full collection history.</div>
+    </div>
+  );
+}
+
+/** A clickable stat box used in the Cash-in-Hand summary card. */
+function StatBox({
+  label, value, onClick, accent = "default", big = false,
+}: {
+  label: string;
+  value: number;
+  onClick?: () => void;
+  accent?: "default" | "emerald" | "rose" | "sky" | "primary";
+  big?: boolean;
+}) {
+  const accentBorder = {
+    default: "border-border hover:border-primary/40",
+    emerald: "border-emerald-200 dark:border-emerald-900 hover:border-emerald-400",
+    rose: "border-rose-200 dark:border-rose-900 hover:border-rose-400",
+    sky: "border-sky-200 dark:border-sky-900 hover:border-sky-400",
+    primary: "border-primary/40 bg-primary/5 hover:bg-primary/10",
+  }[accent];
+  const valueColor = {
+    default: "text-foreground",
+    emerald: "text-emerald-600 dark:text-emerald-400",
+    rose: "text-rose-600 dark:text-rose-400",
+    sky: "text-sky-700 dark:text-sky-300",
+    primary: "text-primary",
+  }[accent];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left rounded-lg border bg-card p-4 transition-colors ${accentBorder} ${big ? "ring-2 ring-primary/30" : ""}`}
+    >
+      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">{label}</div>
+      <div className={`mt-1 font-bold tabular-nums ${big ? "text-2xl" : "text-lg"} ${valueColor}`}>{money(value)}</div>
+    </button>
+  );
+}
+
 // --- printable HTML builders ---
 
 function dayBookHTML(d: DayBook): string {
@@ -1269,4 +1717,34 @@ function expenseLedgerHTML(d: ExpLedger): string {
     <tfoot><tr><td colspan=3>Total — ${d.count} record(s)</td><td class="r">${money(d.totalAmount)}</td><td colspan=2></td></tr></tfoot></table>
     <h2 style="font-size:14px;margin-top:16px">By Account Head</h2>
     <table><thead><tr><th>Head</th><th class="r">Records</th><th class="r">Amount</th></tr></thead><tbody>${byHead}</tbody></table>`;
+}
+
+function incomeLedgerHTML(d: IncLedger): string {
+  const rows = d.rows.map((r) => {
+    const m = r.method === "BANK" ? "Bank" : r.method === "MOBILE_BANK" ? "Mobile" : "Cash";
+    return `<tr><td>${shortDate(r.date)}</td><td>${r.headName}</td><td class="r">${money(r.amount)}</td><td>${m}</td><td>${r.note || ""}</td></tr>`;
+  }).join("");
+  const byHead = d.byHead.map((h) => `<tr><td>${h.headName}</td><td class="r">${h.count}</td><td class="r">${money(h.amount)}</td></tr>`).join("");
+  return `<div class="muted">${d.count} record(s) · Total income: ${money(d.totalAmount)}</div>
+    <table><thead><tr><th>Date</th><th>Account Head</th><th class="r">Amount</th><th>Method</th><th>Note</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr><td colspan=2>Total — ${d.count} record(s)</td><td class="r">${money(d.totalAmount)}</td><td colspan=2></td></tr></tfoot></table>
+    <h2 style="font-size:14px;margin-top:16px">By Account Head</h2>
+    <table><thead><tr><th>Head</th><th class="r">Records</th><th class="r">Amount</th></tr></thead><tbody>${byHead}</tbody></table>`;
+}
+
+function rentSummaryHTML(d: RentSummary): string {
+  const rows = d.rows.map((r) => `<tr><td>${r.tenantCode}</td><td>${r.tenantName}</td><td>${r.propertyName} · ${r.unitName}</td><td class="r">${money(r.monthlyRent)}</td><td class="r">${r.monthsDue}</td><td class="r">${r.monthsPaid}</td><td class="r">${money(r.totalRent)}</td><td class="r">${money(r.totalPaid)}</td><td class="r">${money(r.totalDue)}</td><td class="r">${money(r.advanceDeposit)}</td><td class="r">${money(r.advanceUsed)}</td><td class="r">${money(r.advanceBalance)}</td></tr>`).join("");
+  return `<div class="muted">Rent Summary — ${d.asOfMonth} ${d.asOfYear} · ${d.rows.length} tenants</div>
+    <table><thead><tr><th>Code</th><th>Tenant</th><th>Property / Unit</th><th class="r">Monthly Rent</th><th class="r">Months Due</th><th class="r">Months Paid</th><th class="r">Total Rent</th><th class="r">Total Paid</th><th class="r">Due</th><th class="r">Adv. Dep.</th><th class="r">Adv. Used</th><th class="r">Adv. Bal.</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr><td colspan=3>Total — ${d.rows.length} tenants</td><td class="r">${money(d.totalMonthlyRent)}</td><td></td><td></td><td class="r">${money(d.totalRent)}</td><td class="r">${money(d.totalPaid)}</td><td class="r">${money(d.totalDue)}</td><td></td><td></td><td class="r">${money(d.totalAdvanceBalance)}</td></tr></tfoot></table>
+    <h2 style="font-size:14px;margin-top:16px">Cash in Hand</h2>
+    <table><tbody>
+      <tr><th>Total Rent Collection</th><td class="r">${money(d.totalRentCollection)}</td></tr>
+      <tr><th>Total Other Income</th><td class="r">${money(d.totalOtherIncome)}</td></tr>
+      <tr><th>Total Expense</th><td class="r">${money(d.totalExpense)}</td></tr>
+      <tr><th>Cash in Bank</th><td class="r">${money(d.closingBank)}</td></tr>
+      <tr><th>Cash in Hand</th><td class="r">${money(d.cashInHand)}</td></tr>
+    </tbody></table>`;
 }

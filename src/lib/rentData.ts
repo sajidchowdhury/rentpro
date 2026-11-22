@@ -2589,6 +2589,182 @@ export function getExpenseLedgerReport(opts: {
   return { rows, totalAmount, count: rows.length, byHead };
 }
 
+// --- Income Ledger report --------------------------------------------------
+// Every individual income transaction (NOT aggregated), filterable by account
+// head(s) + date range — mirrors the Expense Ledger report. Used to see all
+// income (rent collections + other income) in one place.
+export interface IncomeLedgerRow {
+  id: number;
+  headId: number | null;
+  headName: string;
+  date: string;
+  amount: number;
+  note: string;
+  method: PaymentMethod;
+}
+export interface IncomeLedgerReport {
+  rows: IncomeLedgerRow[];
+  totalAmount: number;
+  count: number;
+  byHead: Array<{ headId: number | null; headName: string; count: number; amount: number }>;
+}
+export function getIncomeLedgerReport(opts: {
+  headIds?: number[];
+  fromDate?: string;
+  toDate?: string;
+}): IncomeLedgerReport {
+  const ds = loadDataset();
+  const headSet = opts.headIds && opts.headIds.length > 0 ? new Set(opts.headIds) : null;
+  const from = opts.fromDate ? new Date(opts.fromDate + "T00:00:00") : null;
+  const to = opts.toDate ? new Date(opts.toDate + "T23:59:59") : null;
+
+  const filtered = ds.txns.filter((t) => {
+    if (t.type !== "INCOME" || t.inAmount <= 0) return false;
+    if (headSet && !headSet.has(t.accountHeadId ?? -1)) return false;
+    if (from && (!t.transectionDate || t.transectionDate < from)) return false;
+    if (to && (!t.transectionDate || t.transectionDate > to)) return false;
+    return true;
+  });
+  filtered.sort((a, b) => (b.transectionDate!.getTime() - a.transectionDate!.getTime()));
+
+  const rows: IncomeLedgerRow[] = filtered.map((t) => ({
+    id: t.id,
+    headId: t.accountHeadId,
+    headName: t.accountHeadName || "Uncategorized",
+    date: dateOnly(t.transectionDate)!,
+    amount: t.inAmount,
+    note: t.note ?? "",
+    method: t.method,
+  }));
+
+  const totalAmount = rows.reduce((s, r) => s + r.amount, 0);
+  const headMap = new Map<string, { headId: number | null; headName: string; count: number; amount: number }>();
+  for (const r of rows) {
+    const key = String(r.headId ?? "—");
+    const ex = headMap.get(key) ?? { headId: r.headId, headName: r.headName, count: 0, amount: 0 };
+    ex.count += 1; ex.amount += r.amount;
+    headMap.set(key, ex);
+  }
+  const byHead = [...headMap.values()].sort((a, b) => b.amount - a.amount);
+  return { rows, totalAmount, count: rows.length, byHead };
+}
+
+// --- Rent Summary report ---------------------------------------------------
+// A printable per-tenant summary: total months of rent, monthly rent, total
+// paid, total due, advance deductions. Plus a cash-in-hand summary at the
+// bottom: (total rent collection + total other income) - total expense - bank.
+// Each tenant row is clickable to drill down into their collection history.
+export interface RentSummaryRow {
+  tenantId: number;
+  tenantCode: string;
+  tenantName: string;
+  propertyName: string;
+  unitName: string;
+  monthlyRent: number;
+  monthsDue: number;     // how many months of rent are due (from lease start to as-of)
+  monthsPaid: number;    // how many months have been paid
+  totalRent: number;     // monthsDue × monthlyRent
+  totalPaid: number;     // sum of all DONE collections (rent only)
+  totalDue: number;      // totalRent - totalPaid (can be negative = advance credit)
+  advanceDeposit: number;
+  advanceUsed: number;
+  advanceBalance: number;
+  leaseStatus: "ACTIVE" | "CLOSED";
+}
+export interface RentSummaryReport {
+  asOfMonth: string;
+  asOfYear: string;
+  rows: RentSummaryRow[];
+  totalMonthlyRent: number;
+  totalRent: number;
+  totalPaid: number;
+  totalDue: number;
+  totalAdvanceBalance: number;
+  // cash in hand summary
+  totalRentCollection: number; // cash portion of rent collections (excludes advance-adjusted)
+  totalOtherIncome: number;    // non-rent income transactions
+  totalExpense: number;
+  cashInHand: number;          // totalRentCollection + totalOtherIncome - totalExpense - cashInBank
+  closingBank: number;
+}
+export function getRentSummaryReport(asOfMonth: string, asOfYear: string): RentSummaryReport {
+  const ds = loadDataset();
+  const asOfKey = keyFromYM(asOfYear, asOfMonth);
+  const adjustments = new Map(S.tenantAdjustments ?? []);
+
+  const rows: RentSummaryRow[] = [];
+  let totalMonthlyRent = 0, totalRent = 0, totalPaid = 0, totalDue = 0, totalAdvanceBalance = 0;
+  let totalRentCollection = 0;
+
+  for (const t of ds.tenants) {
+    const leases = ds.leases.filter((l) => l.tenantId === t.id);
+    for (const lease of leases) {
+      const startK = dateKey(lease.agreementStart);
+      if (startK === null) continue;
+      const endK = dateKey(lease.agreementEnd);
+      const effEndK = endK !== null ? Math.min(endK, asOfKey) : asOfKey;
+      const monthsDue = Math.max(0, effEndK - startK + 1);
+      const ri = getRentForMonth(lease, asOfMonth, asOfYear);
+      const monthlyRent = ri.rent;
+      const rentTotal = monthsDue * monthlyRent;
+
+      const cols = ds.collections.filter((c) => c.leaseId === lease.id && c.status === "DONE");
+      const paid = cols.reduce((s, c) => s + c.rent, 0);
+      const monthsPaid = cols.length;
+      const advanceUsed = adjustments.get(t.id) ?? 0;
+      const advanceDeposit = lease.advance ?? 0;
+      const advanceBalance = Math.max(0, advanceDeposit - advanceUsed);
+      const due = rentTotal - paid;
+
+      // cash portion of rent collections (excludes advance-adjusted part)
+      const cashFromRent = cols.reduce((s, c) => s + (c.rent - (c.advanceAdjusted ?? 0)), 0);
+      totalRentCollection += cashFromRent;
+
+      rows.push({
+        tenantId: t.id, tenantCode: t.code, tenantName: t.name,
+        propertyName: lease.propertyName, unitName: lease.unitName,
+        monthlyRent, monthsDue, monthsPaid,
+        totalRent: rentTotal, totalPaid: paid, totalDue: due,
+        advanceDeposit, advanceUsed, advanceBalance,
+        leaseStatus: lease.status,
+      });
+      totalMonthlyRent += monthlyRent;
+      totalRent += rentTotal;
+      totalPaid += paid;
+      totalDue += due;
+      totalAdvanceBalance += advanceBalance;
+    }
+  }
+
+  // other income = all INCOME txns that are NOT rent collection
+  const totalOtherIncome = ds.txns
+    .filter((t) => t.type === "INCOME" && t.inAmount > 0 && t.dataInsertedFrom !== "RENT COLLECTION")
+    .reduce((s, t) => s + t.inAmount, 0);
+
+  // total expense
+  const totalExpense = ds.txns
+    .filter((t) => t.type === "EXPENSE" && t.outAmount > 0)
+    .reduce((s, t) => s + t.outAmount, 0);
+
+  // closing bank balance (from day book logic, up to as-of month)
+  const isBank = (m: PaymentMethod) => m === "BANK" || m === "MOBILE_BANK";
+  const bankTxns = ds.txns.filter((t) => {
+    if (!t.transectionDate) return false;
+    const k = t.transectionDate.getFullYear() * 12 + t.transectionDate.getMonth();
+    return k <= asOfKey && t.type !== "ADJUSTMENT";
+  });
+  const closingBank = bankTxns.filter((t) => isBank(t.method)).reduce((s, t) => s + t.inAmount - t.outAmount, 0);
+
+  const cashInHand = totalRentCollection + totalOtherIncome - totalExpense - closingBank;
+
+  return {
+    asOfMonth, asOfYear,
+    rows: rows.sort((a, b) => b.totalDue - a.totalDue),
+    totalMonthlyRent, totalRent, totalPaid, totalDue, totalAdvanceBalance,
+    totalRentCollection, totalOtherIncome, totalExpense, cashInHand, closingBank,
+  };
+}
+
 /** All expense account heads — for the record dialog's type dropdown. */
 export function getExpenseHeads(): Array<{ id: number; name: string; recurring: boolean }> {
   const ds = loadDataset();
