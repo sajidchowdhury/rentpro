@@ -2681,25 +2681,23 @@ export interface RentSummaryReport {
   totalPaid: number;
   totalDue: number;
   totalAdvanceBalance: number;
-  // cash in hand summary
-  totalRentCollection: number;   // GROSS rent collected (includes advance-adjusted portion)
-  totalAdvanceAdjusted: number;  // portion of rent paid FROM advance (not cash)
-  totalAdvanceDeposits: number;  // sum of all lease.advance (cash received at move-in, held)
+  // cash in hand summary — computed from ds.txns (same source as Day Book)
+  totalRentCollection: number;   // CASH received from rent (from income txns, excludes advance-adjusted)
+  totalAdvanceAdjusted: number;  // portion of rent paid FROM advance (informational; already excluded from rent collection)
   totalOtherIncome: number;      // non-rent income transactions
   totalExpense: number;
-  cashInHand: number;            // (rentCollection - advanceAdjusted + otherIncome + advanceDeposits) - expense - bank
+  cashInHand: number;            // (rentCollection + otherIncome) - totalExpense - cashInBank
   closingBank: number;
 }
 export function getRentSummaryReport(asOfMonth: string, asOfYear: string): RentSummaryReport {
   const ds = loadDataset();
   const asOfKey = keyFromYM(asOfYear, asOfMonth);
   const adjustments = new Map(S.tenantAdjustments ?? []);
+  const isBank = (m: PaymentMethod) => m === "BANK" || m === "MOBILE_BANK";
 
   const rows: RentSummaryRow[] = [];
   let totalMonthlyRent = 0, totalRent = 0, totalPaid = 0, totalDue = 0, totalAdvanceBalance = 0;
-  let totalRentCollection = 0;       // GROSS (includes advance-adjusted)
-  let totalAdvanceAdjusted = 0;      // non-cash portion from advance
-  let totalAdvanceDeposits = 0;      // sum of lease.advance (cash held)
+  let totalAdvanceAdjusted = 0;
 
   for (const t of ds.tenants) {
     const leases = ds.leases.filter((l) => l.tenantId === t.id);
@@ -2714,20 +2712,13 @@ export function getRentSummaryReport(asOfMonth: string, asOfYear: string): RentS
       const rentTotal = monthsDue * monthlyRent;
 
       const cols = ds.collections.filter((c) => c.leaseId === lease.id && c.status === "DONE");
-      const paid = cols.reduce((s, c) => s + c.rent, 0);           // GROSS (includes advance portion)
+      const paid = cols.reduce((s, c) => s + c.rent, 0);
       const monthsPaid = cols.length;
       const advanceUsed = adjustments.get(t.id) ?? 0;
       const advanceDeposit = lease.advance ?? 0;
       const advanceBalance = Math.max(0, advanceDeposit - advanceUsed);
       const due = rentTotal - paid;
-
-      // GROSS rent collection (includes the advance-adjusted portion)
-      totalRentCollection += paid;
-      // track the non-cash portion (paid from advance, not actual cash)
-      const adjFromCollections = cols.reduce((s, c) => s + (c.advanceAdjusted ?? 0), 0);
-      totalAdvanceAdjusted += adjFromCollections;
-      // advance deposits are cash received at move-in, held as a liability
-      totalAdvanceDeposits += advanceDeposit;
+      totalAdvanceAdjusted += cols.reduce((s, c) => s + (c.advanceAdjusted ?? 0), 0);
 
       rows.push({
         leaseId: lease.id,
@@ -2746,18 +2737,22 @@ export function getRentSummaryReport(asOfMonth: string, asOfYear: string): RentS
     }
   }
 
-  // other income = all INCOME txns that are NOT rent collection
-  const totalOtherIncome = ds.txns
-    .filter((t) => t.type === "INCOME" && t.inAmount > 0 && t.dataInsertedFrom !== "RENT COLLECTION")
+  // --- Cash in Hand: computed from ds.txns (same source as Day Book) ---
+  // This guarantees the Rent Summary matches the Day Book exactly.
+  const inTxns = ds.txns.filter((t) => t.type === "INCOME" && t.inAmount > 0);
+  // rent collection = income txns tagged RENT COLLECTION (the CASH portion,
+  // already net of advance-adjusted — collectRent records cashIn = total - adj)
+  const totalRentCollection = inTxns
+    .filter((t) => t.dataInsertedFrom === "RENT COLLECTION")
     .reduce((s, t) => s + t.inAmount, 0);
-
-  // total expense
+  const totalOtherIncome = inTxns
+    .filter((t) => t.dataInsertedFrom !== "RENT COLLECTION")
+    .reduce((s, t) => s + t.inAmount, 0);
   const totalExpense = ds.txns
     .filter((t) => t.type === "EXPENSE" && t.outAmount > 0)
     .reduce((s, t) => s + t.outAmount, 0);
 
-  // closing bank balance (from day book logic, up to as-of month)
-  const isBank = (m: PaymentMethod) => m === "BANK" || m === "MOBILE_BANK";
+  // closing bank balance (net bank income - bank expense + transfers, up to as-of month)
   const bankTxns = ds.txns.filter((t) => {
     if (!t.transectionDate) return false;
     const k = t.transectionDate.getFullYear() * 12 + t.transectionDate.getMonth();
@@ -2765,15 +2760,16 @@ export function getRentSummaryReport(asOfMonth: string, asOfYear: string): RentS
   });
   const closingBank = bankTxns.filter((t) => isBank(t.method)).reduce((s, t) => s + t.inAmount - t.outAmount, 0);
 
-  // Cash in Hand = (gross rent − advance-adjusted [not cash] + other income + advance deposits [cash held]) − expense − bank
-  const cashInHand = (totalRentCollection - totalAdvanceAdjusted + totalOtherIncome + totalAdvanceDeposits) - totalExpense - closingBank;
+  // Cash in Hand = (Rent Collection + Other Income) - Total Expense - Cash in Bank
+  // (Rent Collection is already the CASH portion — advance-adjusted is already excluded)
+  const cashInHand = (totalRentCollection + totalOtherIncome) - totalExpense - closingBank;
 
   return {
     asOfMonth, asOfYear,
     rows: rows.sort((a, b) => b.totalDue - a.totalDue),
     totalMonthlyRent, totalRent, totalPaid, totalDue, totalAdvanceBalance,
-    totalRentCollection, totalAdvanceAdjusted, totalAdvanceDeposits,
-    totalOtherIncome, totalExpense, cashInHand, closingBank,
+    totalRentCollection, totalAdvanceAdjusted, totalOtherIncome,
+    totalExpense, cashInHand, closingBank,
   };
 }
 
