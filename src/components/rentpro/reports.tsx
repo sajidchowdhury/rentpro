@@ -58,6 +58,7 @@ interface ExpLedger { rows: ExpLedgerRow[]; totalAmount: number; count: number; 
 interface IncLedgerRow { id: number; headId: number; headName: string; date: string; amount: number; note: string; method: "CASH" | "BANK" | "MOBILE_BANK"; }
 interface IncLedger { rows: IncLedgerRow[]; totalAmount: number; count: number; byHead: Array<{ headId: number; headName: string; count: number; amount: number }>; }
 interface RentSummaryRow {
+  leaseId: number;
   tenantId: number; tenantCode: string; tenantName: string; propertyName: string; unitName: string;
   monthlyRent: number; monthsDue: number; monthsPaid: number;
   totalRent: number; totalPaid: number; totalDue: number;
@@ -68,7 +69,8 @@ interface RentSummary {
   asOfMonth: string; asOfYear: string;
   rows: RentSummaryRow[];
   totalMonthlyRent: number; totalRent: number; totalPaid: number; totalDue: number; totalAdvanceBalance: number;
-  totalRentCollection: number; totalOtherIncome: number; totalExpense: number; cashInHand: number; closingBank: number;
+  totalRentCollection: number; totalAdvanceAdjusted: number; totalAdvanceDeposits: number;
+  totalOtherIncome: number; totalExpense: number; cashInHand: number; closingBank: number;
 }
 
 function printHTML(title: string, bodyInner: string) {
@@ -657,9 +659,11 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
                 <CardDescription>Rent collection, other income, expense &amp; closing cash/bank balance. Click any box for the breakdown.</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-                  <StatBox label="Total Rent Collection" value={rentSummary.totalRentCollection} accent="emerald" onClick={() => setDrillDownType("rent-collection")} />
-                  <StatBox label="Total Other Income" value={rentSummary.totalOtherIncome} accent="emerald" onClick={() => { toast.info("See the Income Ledger tab for the full breakdown"); setTab("income-ledger"); }} />
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
+                  <StatBox label="Rent Collection" value={rentSummary.totalRentCollection} accent="emerald" onClick={() => setDrillDownType("rent-collection")} />
+                  <StatBox label="Advance Taken Monthly" value={rentSummary.totalAdvanceAdjusted} accent="amber" onClick={() => toast.info("Advance deducted from rent — not actual cash received")} />
+                  <StatBox label="Advance Deposits" value={rentSummary.totalAdvanceDeposits} accent="emerald" onClick={() => toast.info("Cash received at move-in, held as liability")} />
+                  <StatBox label="Other Income" value={rentSummary.totalOtherIncome} accent="emerald" onClick={() => { toast.info("See the Income Ledger tab for the full breakdown"); setTab("income-ledger"); }} />
                   <StatBox label="Total Expense" value={rentSummary.totalExpense} accent="rose" onClick={() => { toast.info("See the Expense Ledger tab for the full breakdown"); setTab("expense-ledger"); }} />
                   <StatBox label="Cash in Bank" value={rentSummary.closingBank} accent="sky" onClick={() => { toast.info("See the Day Book tab for the bank balance"); setTab("daybook"); }} />
                   <StatBox label="Cash in Hand" value={rentSummary.cashInHand} accent="primary" big onClick={() => setDrillDownType("cash-hand")} />
@@ -730,7 +734,7 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
                   </TableHeader>
                   <TableBody>
                     {rentSummary?.rows.map((r) => (
-                      <TableRow key={r.tenantId}>
+                      <TableRow key={r.leaseId}>
                         <TableCell className="font-mono text-xs">{r.tenantCode}</TableCell>
                         <TableCell className="font-medium">{r.tenantName}</TableCell>
                         <TableCell className="text-right text-emerald-600 dark:text-emerald-400 tabular-nums">{money(r.totalPaid)}</TableCell>
@@ -760,14 +764,16 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
                 <DialogDescription>How the closing cash-in-hand is computed</DialogDescription>
               </DialogHeader>
               <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span>Rent Collection</span><span className="text-emerald-600 dark:text-emerald-400 tabular-nums">+ {money(rentSummary?.totalRentCollection ?? 0)}</span></div>
+                <div className="flex justify-between"><span>Rent Collection (gross)</span><span className="text-emerald-600 dark:text-emerald-400 tabular-nums">+ {money(rentSummary?.totalRentCollection ?? 0)}</span></div>
+                <div className="flex justify-between"><span>Advance Taken Monthly</span><span className="text-amber-600 dark:text-amber-400 tabular-nums">− {money(rentSummary?.totalAdvanceAdjusted ?? 0)}</span></div>
+                <div className="flex justify-between"><span>Advance Deposits (cash held)</span><span className="text-emerald-600 dark:text-emerald-400 tabular-nums">+ {money(rentSummary?.totalAdvanceDeposits ?? 0)}</span></div>
                 <div className="flex justify-between"><span>Other Income</span><span className="text-emerald-600 dark:text-emerald-400 tabular-nums">+ {money(rentSummary?.totalOtherIncome ?? 0)}</span></div>
                 <div className="flex justify-between"><span>Total Expense</span><span className="text-rose-600 dark:text-rose-400 tabular-nums">− {money(rentSummary?.totalExpense ?? 0)}</span></div>
                 <div className="flex justify-between"><span>Cash in Bank</span><span className="text-sky-700 dark:text-sky-300 tabular-nums">− {money(rentSummary?.closingBank ?? 0)}</span></div>
                 <Separator />
                 <div className="flex justify-between font-bold text-base"><span>Cash in Hand</span><span className="tabular-nums">{money(rentSummary?.cashInHand ?? 0)}</span></div>
                 <div className="text-xs text-muted-foreground rounded-md bg-muted/50 p-3">
-                  Cash in Hand = (Rent Collection + Other Income) − Total Expense − Cash in Bank
+                  Cash in Hand = (Rent Collection − Advance Taken Monthly + Advance Deposits + Other Income) − Total Expense − Cash in Bank
                 </div>
               </div>
             </DialogContent>
@@ -1577,7 +1583,7 @@ function RentSummaryTable({ data, onRowClick }: { data: RentSummary; onRowClick:
                 <TableRow><TableCell colSpan={12} className="text-center text-muted-foreground py-8">No tenants for this month.</TableCell></TableRow>
               ) : paged.pageItems.map((r) => (
                 <TableRow
-                  key={r.tenantId}
+                  key={r.leaseId}
                   className="cursor-pointer hover:bg-muted/50"
                   onClick={() => onRowClick(r)}
                 >
@@ -1741,10 +1747,13 @@ function rentSummaryHTML(d: RentSummary): string {
     <tfoot><tr><td colspan=3>Total — ${d.rows.length} tenants</td><td class="r">${money(d.totalMonthlyRent)}</td><td></td><td></td><td class="r">${money(d.totalRent)}</td><td class="r">${money(d.totalPaid)}</td><td class="r">${money(d.totalDue)}</td><td></td><td></td><td class="r">${money(d.totalAdvanceBalance)}</td></tr></tfoot></table>
     <h2 style="font-size:14px;margin-top:16px">Cash in Hand</h2>
     <table><tbody>
-      <tr><th>Total Rent Collection</th><td class="r">${money(d.totalRentCollection)}</td></tr>
-      <tr><th>Total Other Income</th><td class="r">${money(d.totalOtherIncome)}</td></tr>
-      <tr><th>Total Expense</th><td class="r">${money(d.totalExpense)}</td></tr>
-      <tr><th>Cash in Bank</th><td class="r">${money(d.closingBank)}</td></tr>
+      <tr><th>Rent Collection (gross)</th><td class="r">+ ${money(d.totalRentCollection)}</td></tr>
+      <tr><th>Advance Taken Monthly</th><td class="r">− ${money(d.totalAdvanceAdjusted)}</td></tr>
+      <tr><th>Advance Deposits (cash held)</th><td class="r">+ ${money(d.totalAdvanceDeposits)}</td></tr>
+      <tr><th>Other Income</th><td class="r">+ ${money(d.totalOtherIncome)}</td></tr>
+      <tr><th>Total Expense</th><td class="r">− ${money(d.totalExpense)}</td></tr>
+      <tr><th>Cash in Bank</th><td class="r">− ${money(d.closingBank)}</td></tr>
       <tr><th>Cash in Hand</th><td class="r">${money(d.cashInHand)}</td></tr>
-    </tbody></table>`;
+    </tbody></table>
+    <p class="muted" style="font-size:11px;margin-top:8px">Cash in Hand = (Rent Collection − Advance Taken Monthly + Advance Deposits + Other Income) − Total Expense − Cash in Bank</p>`;
 }

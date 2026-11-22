@@ -2655,6 +2655,7 @@ export function getIncomeLedgerReport(opts: {
 // bottom: (total rent collection + total other income) - total expense - bank.
 // Each tenant row is clickable to drill down into their collection history.
 export interface RentSummaryRow {
+  leaseId: number;              // unique per lease — used as the React key
   tenantId: number;
   tenantCode: string;
   tenantName: string;
@@ -2663,8 +2664,8 @@ export interface RentSummaryRow {
   monthlyRent: number;
   monthsDue: number;     // how many months of rent are due (from lease start to as-of)
   monthsPaid: number;    // how many months have been paid
-  totalRent: number;     // monthsDue × monthlyRent
-  totalPaid: number;     // sum of all DONE collections (rent only)
+  totalRent: number;      // monthsDue × monthlyRent
+  totalPaid: number;      // sum of all DONE collections (rent only)
   totalDue: number;      // totalRent - totalPaid (can be negative = advance credit)
   advanceDeposit: number;
   advanceUsed: number;
@@ -2681,10 +2682,12 @@ export interface RentSummaryReport {
   totalDue: number;
   totalAdvanceBalance: number;
   // cash in hand summary
-  totalRentCollection: number; // cash portion of rent collections (excludes advance-adjusted)
-  totalOtherIncome: number;    // non-rent income transactions
+  totalRentCollection: number;   // GROSS rent collected (includes advance-adjusted portion)
+  totalAdvanceAdjusted: number;  // portion of rent paid FROM advance (not cash)
+  totalAdvanceDeposits: number;  // sum of all lease.advance (cash received at move-in, held)
+  totalOtherIncome: number;      // non-rent income transactions
   totalExpense: number;
-  cashInHand: number;          // totalRentCollection + totalOtherIncome - totalExpense - cashInBank
+  cashInHand: number;            // (rentCollection - advanceAdjusted + otherIncome + advanceDeposits) - expense - bank
   closingBank: number;
 }
 export function getRentSummaryReport(asOfMonth: string, asOfYear: string): RentSummaryReport {
@@ -2694,7 +2697,9 @@ export function getRentSummaryReport(asOfMonth: string, asOfYear: string): RentS
 
   const rows: RentSummaryRow[] = [];
   let totalMonthlyRent = 0, totalRent = 0, totalPaid = 0, totalDue = 0, totalAdvanceBalance = 0;
-  let totalRentCollection = 0;
+  let totalRentCollection = 0;       // GROSS (includes advance-adjusted)
+  let totalAdvanceAdjusted = 0;      // non-cash portion from advance
+  let totalAdvanceDeposits = 0;      // sum of lease.advance (cash held)
 
   for (const t of ds.tenants) {
     const leases = ds.leases.filter((l) => l.tenantId === t.id);
@@ -2709,18 +2714,23 @@ export function getRentSummaryReport(asOfMonth: string, asOfYear: string): RentS
       const rentTotal = monthsDue * monthlyRent;
 
       const cols = ds.collections.filter((c) => c.leaseId === lease.id && c.status === "DONE");
-      const paid = cols.reduce((s, c) => s + c.rent, 0);
+      const paid = cols.reduce((s, c) => s + c.rent, 0);           // GROSS (includes advance portion)
       const monthsPaid = cols.length;
       const advanceUsed = adjustments.get(t.id) ?? 0;
       const advanceDeposit = lease.advance ?? 0;
       const advanceBalance = Math.max(0, advanceDeposit - advanceUsed);
       const due = rentTotal - paid;
 
-      // cash portion of rent collections (excludes advance-adjusted part)
-      const cashFromRent = cols.reduce((s, c) => s + (c.rent - (c.advanceAdjusted ?? 0)), 0);
-      totalRentCollection += cashFromRent;
+      // GROSS rent collection (includes the advance-adjusted portion)
+      totalRentCollection += paid;
+      // track the non-cash portion (paid from advance, not actual cash)
+      const adjFromCollections = cols.reduce((s, c) => s + (c.advanceAdjusted ?? 0), 0);
+      totalAdvanceAdjusted += adjFromCollections;
+      // advance deposits are cash received at move-in, held as a liability
+      totalAdvanceDeposits += advanceDeposit;
 
       rows.push({
+        leaseId: lease.id,
         tenantId: t.id, tenantCode: t.code, tenantName: t.name,
         propertyName: lease.propertyName, unitName: lease.unitName,
         monthlyRent, monthsDue, monthsPaid,
@@ -2755,13 +2765,15 @@ export function getRentSummaryReport(asOfMonth: string, asOfYear: string): RentS
   });
   const closingBank = bankTxns.filter((t) => isBank(t.method)).reduce((s, t) => s + t.inAmount - t.outAmount, 0);
 
-  const cashInHand = totalRentCollection + totalOtherIncome - totalExpense - closingBank;
+  // Cash in Hand = (gross rent − advance-adjusted [not cash] + other income + advance deposits [cash held]) − expense − bank
+  const cashInHand = (totalRentCollection - totalAdvanceAdjusted + totalOtherIncome + totalAdvanceDeposits) - totalExpense - closingBank;
 
   return {
     asOfMonth, asOfYear,
     rows: rows.sort((a, b) => b.totalDue - a.totalDue),
     totalMonthlyRent, totalRent, totalPaid, totalDue, totalAdvanceBalance,
-    totalRentCollection, totalOtherIncome, totalExpense, cashInHand, closingBank,
+    totalRentCollection, totalAdvanceAdjusted, totalAdvanceDeposits,
+    totalOtherIncome, totalExpense, cashInHand, closingBank,
   };
 }
 
