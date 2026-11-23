@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw, Check, ChevronsUpDown, Search, Pencil, Receipt, TrendingUp,
+  BarChart3, Printer, BookOpen, Calendar, Layers, User, Wallet, RefreshCw, Trash2, Ban, RotateCcw, Check, ChevronsUpDown, Search, Pencil, Receipt, TrendingUp, FileSpreadsheet,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -642,6 +642,7 @@ export function ReportsView({ month, year }: { month: string; year: string }) {
                 </div>
                 <div className="flex items-end gap-2">
                   <Button size="sm" variant="outline" onClick={fetchRentSummary}><RefreshCw className="size-3.5" /> Run</Button>
+                  <Button size="sm" variant="outline" onClick={() => window.open(`/api/report/rent-summary-excel?month=${encodeURIComponent(month)}&year=${encodeURIComponent(year)}`, "_blank")}><FileSpreadsheet className="size-3.5" /> Excel</Button>
                   <Button size="sm" onClick={() => rentSummary && printHTML(`Rent Summary — ${month} ${year}`, rentSummaryHTML(rentSummary))} disabled={!rentSummary}><Printer className="size-3.5" /> Print</Button>
                 </div>
               </div>
